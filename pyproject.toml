@@ -1,8 +1,30 @@
-# To get the tests to pass when the repo is first copied
-
 [project]
-name = "datasette-plugin-template-repository"
+name = "datasette-files"
 version = "0.1"
+description = "Upload files to Datasette"
+readme = "README.md"
+authors = [{name = "Datasette"}]
+license = {text = "Apache-2.0"}
+classifiers=[
+    "Framework :: Datasette",
+    "License :: OSI Approved :: Apache Software License"
+]
+requires-python = ">=3.8"
+dependencies = [
+    "datasette"
+]
+
+[project.urls]
+Homepage = "https://github.com/datasette/datasette-files"
+Changelog = "https://github.com/datasette/datasette-files/releases"
+Issues = "https://github.com/datasette/datasette-files/issues"
+CI = "https://github.com/datasette/datasette-files/actions"
+
+[project.entry-points.datasette]
+files = "datasette_files"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
