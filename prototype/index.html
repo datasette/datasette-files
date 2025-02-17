@@ -1,0 +1,341 @@
+<script>
+  class FileUpload extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" });
+      // Internal state
+      this.files = []; // each file: { id, file, status, progress, element }
+      this.maxConcurrentUploads = 4;
+      this.currentUploads = 0;
+  
+      // Create our template
+      this.shadowRoot.innerHTML = `
+        <style>
+          :host {
+            display: block;
+            font-family: sans-serif;
+          }
+          .upload-container {
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+            padding: 20px;
+            text-align: center;
+            background: #fafafa;
+            position: relative;
+          }
+          .drop-area {
+            padding: 40px;
+            cursor: pointer;
+            color: #888;
+            transition: background 0.2s;
+          }
+          .drop-area.dragover {
+            background: #e0e0e0;
+          }
+          .file-list {
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 10px;
+          }
+          .file-item {
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 4px;
+            background: #fff;
+            text-align: left;
+            position: relative;
+          }
+          .file-info {
+            font-size: 14px;
+            margin-bottom: 5px;
+          }
+          .file-actions {
+            margin-bottom: 5px;
+          }
+          .file-actions button {
+            margin-right: 5px;
+            padding: 4px 8px;
+            font-size: 13px;
+          }
+          .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 5px;
+          }
+          .progress-bar {
+            width: 0;
+            height: 100%;
+            background: #4caf50;
+            transition: width 0.2s;
+          }
+          .complete {
+            border-color: #4caf50;
+          }
+          .error {
+            border-color: #f44336;
+          }
+          .upload-all {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #2196f3;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+          }
+          .upload-all:hover {
+            background: #1976d2;
+          }
+        </style>
+        <div class="upload-container">
+          <div class="drop-area">Drag and drop files here or click to select files</div>
+          <input type="file" multiple hidden />
+          <div class="file-list"></div>
+          <button class="upload-all" style="display: none;">Upload All</button>
+        </div>
+      `;
+    }
+  
+    connectedCallback() {
+      // Grab our elements from shadow DOM.
+      this.dropArea = this.shadowRoot.querySelector(".drop-area");
+      this.fileInput = this.shadowRoot.querySelector("input[type='file']");
+      this.fileList = this.shadowRoot.querySelector(".file-list");
+      this.uploadAllButton = this.shadowRoot.querySelector(".upload-all");
+  
+      // Clicking the drop area triggers the hidden file picker.
+      this.dropArea.addEventListener("click", () => {
+        this.fileInput.click();
+      });
+  
+      // When files are selected via the file picker…
+      this.fileInput.addEventListener("change", (e) => {
+        this.handleFiles(e.target.files);
+        e.target.value = ""; // allow selecting same file(s) again
+      });
+  
+      // Drag-and-drop events.
+      this.dropArea.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        this.dropArea.classList.add("dragover");
+      });
+      this.dropArea.addEventListener("dragleave", (e) => {
+        e.preventDefault();
+        this.dropArea.classList.remove("dragover");
+      });
+      this.dropArea.addEventListener("drop", (e) => {
+        e.preventDefault();
+        this.dropArea.classList.remove("dragover");
+        if (e.dataTransfer.files.length > 0) {
+          this.handleFiles(e.dataTransfer.files);
+        }
+      });
+  
+      // "Upload All" button.
+      this.uploadAllButton.addEventListener("click", () => {
+        this.startUploadAll();
+      });
+    }
+  
+    handleFiles(fileList) {
+      for (let i = 0; i < fileList.length; i++) {
+        this.addFile(fileList[i]);
+      }
+      this.updateUploadAllVisibility();
+    }
+  
+    addFile(file) {
+      // Create a unique ID.
+      const id = Date.now() + Math.random();
+      const fileItem = { id, file, status: "pending", progress: 0 };
+  
+      // Create the file item UI.
+      const itemEl = document.createElement("div");
+      itemEl.className = "file-item";
+      itemEl.innerHTML = `
+        <div class="file-info">
+          <span class="file-name">${file.name}</span>
+          <span class="file-size">${this.formatSize(file.size)}</span>
+        </div>
+        <div class="file-actions">
+          <button class="upload-btn">Upload</button>
+          <button class="remove-btn">Remove</button>
+        </div>
+        <div class="progress-bar-container" style="display: none;">
+          <div class="progress-bar"></div>
+        </div>
+        <div class="status"></div>
+      `;
+      fileItem.element = itemEl;
+  
+      // Remove button event.
+      const removeBtn = itemEl.querySelector(".remove-btn");
+      removeBtn.addEventListener("click", () => {
+        this.removeFile(fileItem);
+      });
+      // Individual upload button event.
+      const uploadBtn = itemEl.querySelector(".upload-btn");
+      uploadBtn.addEventListener("click", () => {
+        if (fileItem.status === "pending") {
+          this.enqueueUpload(fileItem);
+        }
+      });
+  
+      this.fileList.appendChild(itemEl);
+      this.files.push(fileItem);
+    }
+  
+    removeFile(fileItem) {
+      // Allow removal only if not already uploading.
+      if (fileItem.status === "uploading") {
+        return; // Or you could alert the user.
+      }
+      this.files = this.files.filter((f) => f.id !== fileItem.id);
+      if (fileItem.element.parentNode) {
+        fileItem.element.parentNode.removeChild(fileItem.element);
+      }
+      this.updateUploadAllVisibility();
+    }
+  
+    updateUploadAllVisibility() {
+      // Show the "Upload All" button if there’s at least one pending file.
+      if (this.files.some((f) => f.status === "pending")) {
+        this.uploadAllButton.style.display = "block";
+      } else {
+        this.uploadAllButton.style.display = "none";
+      }
+    }
+  
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + " B";
+      let kb = bytes / 1024;
+      if (kb < 1024) return kb.toFixed(1) + " KB";
+      let mb = kb / 1024;
+      if (mb < 1024) return mb.toFixed(1) + " MB";
+      let gb = mb / 1024;
+      return gb.toFixed(1) + " GB";
+    }
+  
+    enqueueUpload(fileItem) {
+      // Mark a pending file as queued.
+      if (fileItem.status !== "pending") return;
+      fileItem.status = "queued";
+      fileItem.element.querySelector(".status").textContent = "Queued";
+      this.processQueue();
+    }
+  
+    processQueue() {
+      // Start uploads while we are below the concurrency limit.
+      const queued = this.files.filter((f) => f.status === "queued");
+      while (this.currentUploads < this.maxConcurrentUploads && queued.length > 0) {
+        const fileItem = queued.shift();
+        this.uploadFile(fileItem);
+      }
+    }
+  
+    async uploadFile(fileItem) {
+      fileItem.status = "uploading";
+      this.currentUploads++;
+      const progressContainer = fileItem.element.querySelector(".progress-bar-container");
+      progressContainer.style.display = "block";
+      const progressBar = fileItem.element.querySelector(".progress-bar");
+      fileItem.element.querySelector(".status").textContent = "Uploading...";
+      // Disable buttons during upload.
+      fileItem.element.querySelector(".upload-btn").disabled = true;
+      fileItem.element.querySelector(".remove-btn").disabled = true;
+  
+      try {
+        // STEP 1: Get upload details from your API.
+        const response = await fetch("/api/upload/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: fileItem.file.name,
+            size: fileItem.file.size,
+            type: fileItem.file.type || 'application/octet-stream',
+          }),
+        });
+        if (!response.ok) throw new Error("Failed to get upload details");
+        const data = await response.json();
+        const uploadDetails = data.upload;
+        const onComplete = data.on_complete;
+  
+        // STEP 2: Upload the file (using XMLHttpRequest for progress events).
+        await this.uploadToS3(fileItem, uploadDetails, progressBar);
+  
+        // STEP 3: Notify your system that the upload is complete.
+        const completeResponse = await fetch(onComplete.url, {
+          method: "POST",
+        });
+        if (!completeResponse.ok) throw new Error("Failed to notify on_complete");
+  
+        fileItem.status = "complete";
+        fileItem.element.querySelector(".status").textContent = "Uploaded";
+        fileItem.element.classList.add("complete");
+      } catch (err) {
+        console.error(err);
+        fileItem.status = "error";
+        fileItem.element.querySelector(".status").textContent = "Error";
+        fileItem.element.classList.add("error");
+      } finally {
+        this.currentUploads--;
+        this.processQueue(); // Check if more uploads should be started.
+        this.updateUploadAllVisibility();
+      }
+    }
+  
+    uploadToS3(fileItem, uploadDetails, progressBar) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open(uploadDetails.method, uploadDetails.url);
+        
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = (e.loaded / e.total) * 100;
+            progressBar.style.width = percent + "%";
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            progressBar.style.width = "100%";
+            resolve();
+          } else {
+            reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.responseText}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+
+        // Create FormData and append all fields from the presigned POST
+        const formData = new FormData();
+        // First append all the fields from the presigned POST
+        Object.entries(uploadDetails.headers).forEach(([key, value]) => {
+          formData.append(key, value);
+        });
+        // Append the file last
+        formData.append('file', fileItem.file);
+
+        xhr.send(formData);
+      });
+    }
+  
+    startUploadAll() {
+      // Mark all pending files as queued and process them.
+      this.files.forEach((fileItem) => {
+        if (fileItem.status === "pending") {
+          fileItem.status = "queued";
+          fileItem.element.querySelector(".status").textContent = "Queued";
+        }
+      });
+      this.processQueue();
+    }
+  }
+  
+  customElements.define("file-upload", FileUpload);
+  </script>
+  <file-upload></file-upload>
