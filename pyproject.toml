@@ -11,7 +11,8 @@ classifiers=[
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "datasette"
+    "datasette>=1.0a1",
+    "python-ulid"
 ]
 
 [project.urls]
@@ -31,3 +32,6 @@ include = ["datasette_files"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
+
+[tool.setuptools.package-data]
+datasette_files = ["templates/*"]
