@@ -12,6 +12,7 @@ classifiers=[
 requires-python = ">=3.8"
 dependencies = [
     "datasette>=1.0a1",
+    "datasette-secrets",
     "python-ulid"
 ]
 

@@ -1,8 +1,10 @@
 import os
 import time
+import datetime
 import boto3
 import json
-from datasette import hookimpl, Response
+from datasette import hookimpl, Response, Permission, Forbidden, NotFound
+from datasette.utils import await_me_maybe
 from datasette.plugins import pm
 from ulid import ULID
 from . import hookspecs
@@ -31,7 +33,7 @@ CREATE TABLE IF NOT EXISTS files_files (
    source_id INTEGER NOT NULL,
    path TEXT NOT NULL,
    size INTEGER,
-   mtime INTEGER,
+   mtime INTEGER, -- no ctime because some providers don't offer it
    type TEXT,
    metadata TEXT,
    FOREIGN KEY (source_id) REFERENCES files_sources(id),
@@ -49,6 +51,20 @@ CREATE TABLE IF NOT EXISTS files_pending (
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files_files(path);
 """
+
+
+@hookimpl
+def register_permissions(datasette):
+    return [
+        Permission(
+            name="debug-storages",
+            abbr=None,
+            description="Debug storages",
+            takes_database=False,
+            takes_resource=False,
+            default=False,
+        )
+    ]
 
 
 @hookimpl
@@ -173,11 +189,60 @@ async def upload_complete(request, datasette):
     )
 
 
+async def debug_storages(datasette, request):
+    if not await datasette.permission_allowed(request.actor, "debug-storages"):
+        raise Forbidden("Needs debug-storages permission")
+    storages = await load_storages(datasette)
+    return Response.json(
+        {"storages": [obj.__dict__ for obj in storages]},
+        default=lambda obj: (
+            obj.isoformat() if isinstance(obj, datetime.datetime) else obj
+        ),
+    )
+
+
+async def list_storage(datasette, request):
+    if not await datasette.permission_allowed(request.actor, "debug-storages"):
+        raise Forbidden("Needs debug-storages permission")
+    name = request.url_vars["name"]
+    storages = await load_storages(datasette)
+    matches = [storage for storage in storages if storage.name == name]
+    if not matches:
+        raise NotFound("Storage not found")
+    storage = matches[0]
+    return Response.json(
+        {
+            "files": list([obj async for obj in storage.list_files()]),
+        },
+        default=special_repr,
+    )
+
+
+def special_repr(obj):
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    elif hasattr(obj, "__dict__"):
+        return obj.__dict__
+    else:
+        return obj
+
+
+async def load_storages(datasette):
+    storages = []
+    for hook in pm.hook.register_files_storages(datasette=datasette):
+        extra_storages = await await_me_maybe(hook)
+        if extra_storages:
+            storages.extend(extra_storages)
+    return storages
+
+
 @hookimpl
 def register_routes():
     return [
         (r"^/-/files/s3/upload$", s3_upload),
         (r"^/-/files/complete$", upload_complete),
+        (r"^/-/files/storages$", debug_storages),
+        (r"^/-/files/storages/list/(?P<name>[^/]+)$", list_storage),
     ]
 
 

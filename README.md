@@ -33,3 +33,20 @@ To run the tests:
 ```bash
 pytest
 ```
+
+Recommendation to run a test server:
+```bash
+datasette . --internal internal.db --root --reload \
+  --secret 1 -s permissions.debug-storages.id root
+```
+And if you're using `datasette-secrets` to manage any secrets for those plugins:
+```bash
+datasette secrets generate-encryption-key > key.txt
+```
+Then add this to the `datasette` line:
+```bash
+datasette . --internal internal.db --root --reload \
+  --secret 1 -s permissions.debug-storages.id root \
+  -s plugins.datasette-secrets.encryption-key "$(cat key.txt)" \
+  -s permissions.manage-secrets.id root 
+```
