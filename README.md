@@ -19,33 +19,24 @@ Usage instructions go here.
 
 ## Development
 
-To set up this plugin locally, first checkout the code. Then create a new virtual environment:
+To set up this plugin locally, first checkout the code. Run the tests with `uv`:
 ```bash
 cd datasette-files
-python3 -m venv venv
-source venv/bin/activate
-```
-Now install the dependencies and test dependencies:
-```bash
-pip install -e '.[test]'
-```
-To run the tests:
-```bash
-pytest
+uv run pytest
 ```
 
 Recommendation to run a test server:
 ```bash
-datasette . --internal internal.db --root --reload \
+uv run datasette . --internal internal.db --root --reload \
   --secret 1 -s permissions.debug-storages.id root
 ```
 And if you're using `datasette-secrets` to manage any secrets for those plugins:
 ```bash
-datasette secrets generate-encryption-key > key.txt
+uv run datasette secrets generate-encryption-key > key.txt
 ```
 Then add this to the `datasette` line:
 ```bash
-datasette . --internal internal.db --root --reload \
+uv run datasette . --internal internal.db --root --reload \
   --secret 1 -s permissions.debug-storages.id root \
   -s plugins.datasette-secrets.encryption-key "$(cat key.txt)" \
   -s permissions.manage-secrets.id root 

@@ -1,19 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "datasette-files"
 version = "0.1"
 description = "Upload files to Datasette"
 readme = "README.md"
 authors = [{name = "Datasette"}]
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 classifiers=[
-    "Framework :: Datasette",
-    "License :: OSI Approved :: Apache Software License"
+    "Framework :: Datasette"
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a1",
+    "datasette>=1.0a23",
     "datasette-secrets",
-    "python-ulid"
+    "python-ulid",
+    "boto3",
+    "typing_extensions"
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
 ]
 
 [project.urls]
@@ -24,9 +35,6 @@ CI = "https://github.com/datasette/datasette-files/actions"
 
 [project.entry-points.datasette]
 files = "datasette_files"
-
-[project.optional-dependencies]
-test = ["pytest", "pytest-asyncio"]
 
 [tool.setuptools.packages.find]
 include = ["datasette_files"]
