@@ -10,9 +10,50 @@ The plugin has a working MVP for S3 file uploads with:
 - Database tracking of uploaded files
 - Plugin hook system foundation
 
-## Priority 1: Core Functionality Completion
+## Priority 1: Cell Rendering & File Display
 
-### 1.1 Implement S3 Storage Plugin Class
+### 1.1 render_cell() Hook for File References
+
+Implement the `render_cell()` plugin hook to detect and render file references in table cells.
+
+**File Reference Format:**
+- Single file: `"df-{ulid}"` (lowercase `df-` prefix)
+- Multiple files: `["df-{ulid1}", "df-{ulid2}"]` (JSON array)
+
+**Rendered Output:**
+- Display filename (extracted from last path segment), size, and modified time
+- Link to file detail page at `/-/files/{ulid}`
+- For arrays, render all files in a list
+
+**Tasks:**
+- [ ] Implement `render_cell()` hook to detect `df-` prefixed strings
+- [ ] Parse JSON arrays to detect multiple file references
+- [ ] Look up file metadata from `files_files` table by ULID
+- [ ] Extract filename from path (last segment of `uploads/{ulid}/{filename}`)
+- [ ] Render file info with link to detail page
+- [ ] Handle missing/invalid ULIDs gracefully
+
+### 1.2 File Detail Page (`/-/files/{ulid}`)
+
+Create a detail page for individual files.
+
+**Tasks:**
+- [ ] Add route `/-/files/{ulid}` returning file detail page
+- [ ] Display file metadata (filename, size, type, upload time)
+- [ ] Provide download link (expiring S3 URL)
+- [ ] Inline view for images (img tag with expiring URL)
+- [ ] Return 404 for unknown ULIDs
+
+### 1.3 File Download Endpoint
+
+**Tasks:**
+- [ ] Add `/-/files/{ulid}/download` endpoint
+- [ ] Generate expiring S3 presigned GET URL
+- [ ] Redirect to the presigned URL (or proxy if needed)
+
+## Priority 2: Storage Plugin Architecture
+
+### 2.1 Implement S3 Storage Plugin Class
 
 Convert the hardcoded S3 functionality into a proper Storage subclass implementing the abstract interface in `base.py`.
 
@@ -25,23 +66,15 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Register S3 storage via the plugin hook system
 - [ ] Update `/__init__.py` to use the storage plugin system instead of hardcoded S3
 
-### 1.2 File Download Functionality
+### 2.2 File Deletion
 
 **Tasks:**
-- [ ] Add `GET /-/files/download/<file_id>` endpoint for direct downloads
-- [ ] Add `GET /-/files/download-url/<file_id>` endpoint returning expiring download URLs
-- [ ] Implement permission checking for file downloads
-- [ ] Add download links to the UI
-
-### 1.3 File Deletion
-
-**Tasks:**
-- [ ] Add `DELETE /-/files/<file_id>` endpoint
+- [ ] Add `DELETE /-/files/{ulid}` endpoint
 - [ ] Implement S3 delete_object in storage class
 - [ ] Add delete UI buttons with confirmation
 - [ ] Handle cascading deletes in database
 
-### 1.4 File Browser UI
+### 2.3 File Browser UI
 
 **Tasks:**
 - [ ] Create `/-/files` page listing all uploaded files
@@ -50,9 +83,9 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Add filtering/search capabilities
 - [ ] Include download and delete actions per file
 
-## Priority 2: Testing
+## Priority 3: Testing
 
-### 2.1 Unit Tests
+### 3.1 Unit Tests
 
 **Tasks:**
 - [ ] Test database schema creation
@@ -60,7 +93,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Test upload state transitions (pending → queued → uploading → complete)
 - [ ] Test Storage abstract class interface compliance
 
-### 2.2 Integration Tests
+### 3.2 Integration Tests
 
 **Tasks:**
 - [ ] Test S3 presigned POST generation (with mocked boto3)
@@ -69,16 +102,16 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Test permission checking
 - [ ] Test CSRF protection behavior
 
-### 2.3 End-to-End Tests
+### 3.3 End-to-End Tests
 
 **Tasks:**
 - [ ] Test full upload flow with mocked S3
 - [ ] Test error handling scenarios
 - [ ] Test concurrent upload handling
 
-## Priority 3: Plugin System & Multiple Backends
+## Priority 4: Multiple Storage Backends
 
-### 3.1 Complete Plugin Hook System
+### 4.1 Complete Plugin Hook System
 
 **Tasks:**
 - [ ] Document the storage plugin hook interface
@@ -86,7 +119,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Test plugin registration and discovery
 - [ ] Allow runtime storage configuration via database
 
-### 3.2 Local Filesystem Storage Backend
+### 4.2 Local Filesystem Storage Backend
 
 **Tasks:**
 - [ ] Create `datasette_files/storages/local.py`
@@ -94,23 +127,23 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Configure storage path via settings
 - [ ] Handle security considerations (path traversal prevention)
 
-### 3.3 Google Cloud Storage Backend
+### 4.3 Google Cloud Storage Backend
 
 **Tasks:**
 - [ ] Create `datasette_files/storages/gcs.py`
 - [ ] Implement GCS signed URL uploads
 - [ ] Add google-cloud-storage dependency (optional)
 
-### 3.4 Azure Blob Storage Backend
+### 4.4 Azure Blob Storage Backend
 
 **Tasks:**
 - [ ] Create `datasette_files/storages/azure.py`
 - [ ] Implement Azure SAS token uploads
 - [ ] Add azure-storage-blob dependency (optional)
 
-## Priority 4: Security & Permissions
+## Priority 5: Security & Permissions
 
-### 4.1 Permission System
+### 5.1 Permission System
 
 **Tasks:**
 - [ ] Define granular permissions: upload, download, delete, admin
@@ -118,7 +151,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Integrate with Datasette's actor permissions
 - [ ] Add permission configuration UI for admins
 
-### 4.2 Input Validation & Security
+### 5.2 Input Validation & Security
 
 **Tasks:**
 - [ ] Validate file types (configurable allowlist/blocklist)
@@ -127,7 +160,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Implement rate limiting for uploads
 - [ ] Add audit logging for file operations
 
-### 4.3 S3 Configuration Security
+### 5.3 S3 Configuration Security
 
 **Tasks:**
 - [ ] Remove hardcoded environment variables
@@ -135,9 +168,9 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Validate bucket existence and permissions on startup
 - [ ] Add health check endpoint for storage connectivity
 
-## Priority 5: Documentation
+## Priority 6: Documentation
 
-### 5.1 User Documentation
+### 6.1 User Documentation
 
 **Tasks:**
 - [ ] Complete README.md with full usage instructions
@@ -145,7 +178,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Add screenshots of the upload UI
 - [ ] Provide example deployment configurations
 
-### 5.2 Developer Documentation
+### 6.2 Developer Documentation
 
 **Tasks:**
 - [ ] Document the Storage plugin interface
@@ -153,16 +186,16 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Add API reference for all endpoints
 - [ ] Document database schema
 
-### 5.3 Examples
+### 6.3 Examples
 
 **Tasks:**
 - [ ] Create example project using datasette-files
 - [ ] Document integration with other Datasette plugins
 - [ ] Provide Docker deployment example
 
-## Priority 6: UX Improvements
+## Priority 7: UX Improvements
 
-### 6.1 Upload UI Enhancements
+### 7.1 Upload UI Enhancements
 
 **Tasks:**
 - [ ] Add file type icons
@@ -171,7 +204,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Support folder uploads (recursive)
 - [ ] Add paste-to-upload functionality
 
-### 6.2 File Management UI
+### 7.2 File Management UI
 
 **Tasks:**
 - [ ] Add file preview for images
@@ -179,7 +212,7 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 - [ ] Add file renaming capability
 - [ ] Implement file organization (folders/tags)
 
-### 6.3 Accessibility
+### 7.3 Accessibility
 
 **Tasks:**
 - [ ] Ensure keyboard navigation for all features
@@ -207,26 +240,33 @@ Convert the hardcoded S3 functionality into a proper Storage subclass implementi
 
 ## Suggested Implementation Order
 
-1. **Phase 1 - Foundation** (Priority 1.1 + 2.1)
-   - Implement S3 Storage class using plugin interface
-   - Add basic unit tests for core functionality
+1. **Phase 1 - Cell Rendering** (Priority 1)
+   - Implement `render_cell()` hook for `df-{ulid}` detection
+   - Create file detail page at `/-/files/{ulid}`
+   - Add download endpoint with expiring URLs
+   - Inline image viewing
 
-2. **Phase 2 - Complete Upload Flow** (Priority 1.4 + 2.2)
-   - Build file browser UI
-   - Add integration tests
+2. **Phase 2 - Storage Architecture** (Priority 2.1)
+   - Refactor S3 into proper Storage plugin class
+   - Implement expiring download URLs via storage interface
 
-3. **Phase 3 - Full File Operations** (Priority 1.2 + 1.3)
-   - Implement download and delete functionality
-   - Complete the file management lifecycle
+3. **Phase 3 - File Management** (Priority 2.2 + 2.3)
+   - File browser UI at `/-/files`
+   - Delete functionality
 
-4. **Phase 4 - Production Ready** (Priority 4 + 5.1)
-   - Implement security and permissions
-   - Write user documentation
+4. **Phase 4 - Testing** (Priority 3)
+   - Unit tests for render_cell detection
+   - Integration tests for file endpoints
+   - E2E tests with mocked S3
 
-5. **Phase 5 - Ecosystem** (Priority 3)
-   - Add additional storage backends
-   - Document plugin system for third-party developers
+5. **Phase 5 - Production Ready** (Priority 5 + 6.1)
+   - Security and permissions
+   - User documentation
 
-6. **Phase 6 - Polish** (Priority 6 + Technical Debt)
+6. **Phase 6 - Ecosystem** (Priority 4)
+   - Additional storage backends (local, GCS, Azure)
+   - Plugin system documentation
+
+7. **Phase 7 - Polish** (Priority 7 + Technical Debt)
    - UX improvements
    - Address technical debt
