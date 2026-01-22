@@ -3,7 +3,8 @@ import time
 import datetime
 import boto3
 import json
-from datasette import hookimpl, Response, Permission, Forbidden, NotFound
+from datasette import hookimpl, Response, Forbidden, NotFound
+from datasette.permissions import Action
 from datasette.utils import await_me_maybe
 from datasette.plugins import pm
 from ulid import ULID
@@ -54,15 +55,11 @@ CREATE INDEX IF NOT EXISTS idx_files_path ON files_files(path);
 
 
 @hookimpl
-def register_permissions(datasette):
+def register_actions(datasette):
     return [
-        Permission(
+        Action(
             name="debug-storages",
-            abbr=None,
             description="Debug storages",
-            takes_database=False,
-            takes_resource=False,
-            default=False,
         )
     ]
 
@@ -190,7 +187,7 @@ async def upload_complete(request, datasette):
 
 
 async def debug_storages(datasette, request):
-    if not await datasette.permission_allowed(request.actor, "debug-storages"):
+    if not await datasette.allowed(actor=request.actor, action="debug-storages"):
         raise Forbidden("Needs debug-storages permission")
     storages = await load_storages(datasette)
     return Response.json(
@@ -202,7 +199,7 @@ async def debug_storages(datasette, request):
 
 
 async def list_storage(datasette, request):
-    if not await datasette.permission_allowed(request.actor, "debug-storages"):
+    if not await datasette.allowed(actor=request.actor, action="debug-storages"):
         raise Forbidden("Needs debug-storages permission")
     name = request.url_vars["name"]
     storages = await load_storages(datasette)
