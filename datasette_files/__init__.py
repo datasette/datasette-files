@@ -3,6 +3,8 @@ import time
 import datetime
 import boto3
 import json
+import re
+import markupsafe
 from datasette import hookimpl, Response, Forbidden, NotFound
 from datasette.permissions import Action
 from datasette.utils import await_me_maybe
@@ -18,6 +20,32 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 # Initialize the boto3 client.
 s3_client = boto3.client("s3", region_name=AWS_REGION)
+
+# Pattern to match df-{ulid} file references
+FILE_REF_PATTERN = re.compile(r"^df-([0-9a-z]{26})$", re.IGNORECASE)
+
+
+def extract_filename(path):
+    """Extract filename from path like 'uploads/{ulid}/{filename}'."""
+    return path.split("/")[-1] if path else ""
+
+
+def format_file_size(size):
+    """Format file size in human-readable form."""
+    if size is None:
+        return "Unknown"
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{size} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def is_image_type(file_type):
+    """Check if the file type is an image."""
+    if not file_type:
+        return False
+    return file_type.startswith("image/")
 
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS files_sources (
@@ -186,6 +214,94 @@ async def upload_complete(request, datasette):
     )
 
 
+async def file_detail(request, datasette):
+    """
+    Endpoint: GET /-/files/{ulid}
+
+    Display file details page with metadata and inline preview for images.
+    """
+    ulid = request.url_vars["ulid"]
+
+    db = datasette.get_internal_database()
+    file_row = (
+        await db.execute("select * from files_files where ulid = ?", (ulid,))
+    ).first()
+
+    if not file_row:
+        raise NotFound("File not found")
+
+    file_info = dict(file_row)
+    filename = extract_filename(file_info["path"])
+    file_type = file_info.get("type", "")
+    is_image = is_image_type(file_type)
+
+    # Generate expiring download URL
+    download_url = s3_client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": S3_BUCKET, "Key": file_info["path"]},
+        ExpiresIn=3600,
+    )
+
+    # Format mtime
+    mtime = file_info.get("mtime")
+    if mtime:
+        mtime_formatted = datetime.datetime.fromtimestamp(mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    else:
+        mtime_formatted = "Unknown"
+
+    return Response.html(
+        await datasette.render_template(
+            "files_detail.html",
+            {
+                "ulid": ulid,
+                "filename": filename,
+                "size": format_file_size(file_info.get("size")),
+                "size_bytes": file_info.get("size"),
+                "type": file_type,
+                "mtime": mtime_formatted,
+                "is_image": is_image,
+                "download_url": download_url,
+            },
+            request=request,
+        )
+    )
+
+
+async def file_download(request, datasette):
+    """
+    Endpoint: GET /-/files/{ulid}/download
+
+    Redirect to an expiring S3 presigned URL for download.
+    """
+    ulid = request.url_vars["ulid"]
+
+    db = datasette.get_internal_database()
+    file_row = (
+        await db.execute("select * from files_files where ulid = ?", (ulid,))
+    ).first()
+
+    if not file_row:
+        raise NotFound("File not found")
+
+    file_info = dict(file_row)
+    filename = extract_filename(file_info["path"])
+
+    # Generate expiring download URL with content-disposition for download
+    download_url = s3_client.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": S3_BUCKET,
+            "Key": file_info["path"],
+            "ResponseContentDisposition": f'attachment; filename="{filename}"',
+        },
+        ExpiresIn=3600,
+    )
+
+    return Response.redirect(download_url)
+
+
 async def debug_storages(datasette, request):
     if not await datasette.allowed(actor=request.actor, action="debug-storages"):
         raise Forbidden("Needs debug-storages permission")
@@ -233,6 +349,112 @@ async def load_storages(datasette):
     return storages
 
 
+async def get_file_info(datasette, ulid):
+    """Look up file info by ULID from internal database."""
+    db = datasette.get_internal_database()
+    file_row = (
+        await db.execute("select * from files_files where ulid = ?", (ulid,))
+    ).first()
+    if not file_row:
+        return None
+    return dict(file_row)
+
+
+def render_file_reference(ulid, file_info):
+    """Render HTML for a single file reference."""
+    if file_info is None:
+        # File not found - render as broken reference
+        return f'<span class="df-file df-missing" title="File not found">df-{markupsafe.escape(ulid)}</span>'
+
+    filename = extract_filename(file_info["path"])
+    size = format_file_size(file_info.get("size"))
+    file_type = file_info.get("type", "")
+
+    # Determine icon based on file type
+    if is_image_type(file_type):
+        icon = "🖼️"
+    elif file_type and file_type.startswith("video/"):
+        icon = "🎬"
+    elif file_type and file_type.startswith("audio/"):
+        icon = "🎵"
+    elif file_type == "application/pdf":
+        icon = "📄"
+    else:
+        icon = "📎"
+
+    return (
+        f'<a href="/-/files/{markupsafe.escape(ulid)}" class="df-file" '
+        f'title="{markupsafe.escape(file_type)}">'
+        f'{icon} {markupsafe.escape(filename)} <span class="df-size">({size})</span></a>'
+    )
+
+
+@hookimpl
+def render_cell(value, datasette):
+    """
+    Render cells containing file references.
+
+    Detects:
+    - Single file: "df-{ulid}"
+    - Multiple files: ["df-{ulid1}", "df-{ulid2}"]
+    """
+    async def inner():
+        if value is None:
+            return None
+
+        items = None
+
+        # Check for single string reference or JSON array string
+        if isinstance(value, str):
+            match = FILE_REF_PATTERN.match(value)
+            if match:
+                ulid = match.group(1).lower()
+                file_info = await get_file_info(datasette, ulid)
+                return markupsafe.Markup(render_file_reference(ulid, file_info))
+
+            # Try parsing as JSON array
+            if value.startswith("["):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        items = parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            if items is None:
+                return None
+
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+
+        # Check if all items match the pattern
+        file_refs = []
+        for item in items:
+            if not isinstance(item, str):
+                return None
+            match = FILE_REF_PATTERN.match(item)
+            if not match:
+                return None
+            file_refs.append(match.group(1).lower())
+
+        if not file_refs:
+            return None
+
+        # Render all file references
+        html_parts = []
+        for ulid in file_refs:
+            file_info = await get_file_info(datasette, ulid)
+            html_parts.append(render_file_reference(ulid, file_info))
+
+        return markupsafe.Markup('<ul class="df-file-list">' +
+            "".join(f"<li>{part}</li>" for part in html_parts) +
+            "</ul>")
+
+    return inner
+
+
 @hookimpl
 def register_routes():
     return [
@@ -240,6 +462,8 @@ def register_routes():
         (r"^/-/files/complete$", upload_complete),
         (r"^/-/files/storages$", debug_storages),
         (r"^/-/files/storages/list/(?P<name>[^/]+)$", list_storage),
+        (r"^/-/files/(?P<ulid>[0-9a-z]{26})/download$", file_download),
+        (r"^/-/files/(?P<ulid>[0-9a-z]{26})$", file_detail),
     ]
 
 

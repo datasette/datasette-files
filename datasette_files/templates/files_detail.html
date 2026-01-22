@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}{{ filename }} - Datasette Files{% endblock %}
+
+{% block content %}
+
+<style>
+  .file-detail {
+    max-width: 800px;
+  }
+  .file-detail h1 {
+    word-break: break-all;
+  }
+  .file-meta {
+    background: #f5f5f5;
+    padding: 15px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+  }
+  .file-meta dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 16px;
+    margin: 0;
+  }
+  .file-meta dt {
+    font-weight: bold;
+    color: #555;
+  }
+  .file-meta dd {
+    margin: 0;
+  }
+  .file-actions {
+    margin-bottom: 20px;
+  }
+  .file-actions a {
+    display: inline-block;
+    padding: 10px 20px;
+    background: #2196f3;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+    margin-right: 10px;
+  }
+  .file-actions a:hover {
+    background: #1976d2;
+  }
+  .file-preview {
+    margin-top: 20px;
+  }
+  .file-preview img {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+  .file-id {
+    font-family: monospace;
+    font-size: 0.9em;
+    color: #666;
+  }
+</style>
+
+<div class="file-detail">
+  <h1>{{ filename }}</h1>
+
+  <div class="file-meta">
+    <dl>
+      <dt>File ID</dt>
+      <dd class="file-id">df-{{ ulid }}</dd>
+
+      <dt>Size</dt>
+      <dd>{{ size }}{% if size_bytes %} ({{ size_bytes }} bytes){% endif %}</dd>
+
+      <dt>Type</dt>
+      <dd>{{ type or "Unknown" }}</dd>
+
+      <dt>Uploaded</dt>
+      <dd>{{ mtime }}</dd>
+    </dl>
+  </div>
+
+  <div class="file-actions">
+    <a href="/-/files/{{ ulid }}/download">Download</a>
+    <a href="{{ download_url }}" target="_blank">Open in New Tab</a>
+  </div>
+
+  {% if is_image %}
+  <div class="file-preview">
+    <h2>Preview</h2>
+    <img src="{{ download_url }}" alt="{{ filename }}">
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
