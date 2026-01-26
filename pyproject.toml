@@ -14,11 +14,12 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a23",
+    "datasette @ https://github.com/simonw/datasette/archive/de34fa532c15f7c6b74de19f1b2195e24dd5c82a.zip",
     "datasette-secrets",
     "python-ulid",
     "boto3",
-    "typing_extensions"
+    "typing_extensions",
+    "aiofiles"
 ]
 
 [dependency-groups]

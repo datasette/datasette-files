@@ -5,9 +5,12 @@ import boto3
 import json
 from datasette import hookimpl, Response, Permission, Forbidden, NotFound
 from datasette.utils import await_me_maybe
+from datasette.utils.multipart import UploadedFile
 from datasette.plugins import pm
 from ulid import ULID
 from . import hookspecs
+from .local import LocalDirectoryStorage
+from .base import Storage, File
 
 pm.add_hookspecs(hookspecs)
 
@@ -218,6 +221,115 @@ async def list_storage(datasette, request):
     )
 
 
+async def local_upload(request, datasette):
+    """
+    Endpoint: POST /-/files/local/upload/<storage_name>
+
+    Handles multipart form uploads directly to a local directory storage.
+    Uses the new request.form() method with files=True.
+    """
+    storage_name = request.url_vars.get("storage_name")
+
+    if request.method == "GET":
+        return Response.html(
+            await datasette.render_template(
+                "files_local_upload.html",
+                {"storage_name": storage_name},
+                request=request
+            )
+        )
+
+    # POST - handle file upload
+    storages = await load_storages(datasette)
+    matches = [s for s in storages if s.name == storage_name and isinstance(s, LocalDirectoryStorage)]
+
+    if not matches:
+        return Response.json(
+            {"error": f"Local storage '{storage_name}' not found"},
+            status=404
+        )
+
+    storage = matches[0]
+
+    # Parse multipart form data with file support
+    form_data = await request.form(files=True)
+
+    # Get the uploaded file
+    uploaded_file = form_data.get("file")
+
+    if not uploaded_file or not isinstance(uploaded_file, UploadedFile):
+        return Response.json(
+            {"error": "No file uploaded. Use 'file' form field."},
+            status=400
+        )
+
+    # Read the file content
+    content = await uploaded_file.read()
+
+    # Save to local storage
+    saved_path = await storage.upload_file(
+        filename=uploaded_file.filename,
+        content=content,
+        content_type=uploaded_file.content_type
+    )
+
+    # Record in database
+    db = datasette.get_internal_database()
+    upload_id = str(ULID()).lower()
+
+    # Get the source_id for this storage
+    source_row = (
+        await db.execute(
+            "SELECT id FROM files_sources WHERE name = ?",
+            (storage_name,)
+        )
+    ).first()
+
+    if source_row:
+        source_id = source_row["id"]
+    else:
+        # Create source entry if it doesn't exist
+        await db.execute_write(
+            """
+            INSERT OR IGNORE INTO files_sources (name, type, config)
+            VALUES (?, ?, ?)
+            """,
+            (storage_name, "local", json.dumps({"directory": str(storage.directory)}))
+        )
+        source_row = (
+            await db.execute(
+                "SELECT id FROM files_sources WHERE name = ?",
+                (storage_name,)
+            )
+        ).first()
+        source_id = source_row["id"]
+
+    await db.execute_write(
+        """
+        INSERT INTO files_files (ulid, source_id, path, size, mtime, type, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            upload_id,
+            source_id,
+            saved_path,
+            uploaded_file.size,
+            int(time.time()),
+            uploaded_file.content_type,
+            "{}",
+        ),
+    )
+
+    return Response.json({
+        "status": "success",
+        "id": upload_id,
+        "filename": uploaded_file.filename,
+        "path": saved_path,
+        "size": uploaded_file.size,
+        "content_type": uploaded_file.content_type,
+    })
+
+
 def special_repr(obj):
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
@@ -243,12 +355,19 @@ def register_routes():
         (r"^/-/files/complete$", upload_complete),
         (r"^/-/files/storages$", debug_storages),
         (r"^/-/files/storages/list/(?P<name>[^/]+)$", list_storage),
+        (r"^/-/files/local/upload/(?P<storage_name>[^/]+)$", local_upload),
     ]
 
 
 @hookimpl
 def skip_csrf(datasette, scope):
-    return scope["path"] in (
+    path = scope["path"]
+    if path in (
         datasette.urls.path("/-/files/s3/upload"),
         datasette.urls.path("/-/files/complete"),
-    )
+    ):
+        return True
+    # Allow local upload paths (they have variable storage_name)
+    if path.startswith(datasette.urls.path("/-/files/local/upload/")):
+        return True
+    return False
