@@ -140,8 +140,10 @@ uv run pytest
 
 Recommendation to run a test server:
 ```bash
-uv run datasette . --internal internal.db --root --reload \
-  --secret 1 -s permissions.debug-storages.id root
+uv run datasette --root --secret 1 --internal internal.db data.db \
+  --create \
+  -s plugins.datasette-files.local-dirs '[{"name": "uploads", "directory": "/tmp/uploads"}]' \
+  --reload
 ```
 And if you're using `datasette-secrets` to manage any secrets for those plugins:
 ```bash
