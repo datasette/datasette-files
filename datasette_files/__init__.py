@@ -1,11 +1,13 @@
 import os
 import time
 import datetime
+import pathlib
 import boto3
 import json
 from datasette import hookimpl, Response, Permission, Forbidden, NotFound
 from datasette.utils import await_me_maybe
 from datasette.utils.multipart import UploadedFile
+from datasette.permissions import Action
 from datasette.plugins import pm
 from ulid import ULID
 from . import hookspecs
@@ -77,6 +79,16 @@ def startup(datasette):
         await db.execute_write_script(CREATE_SQL)
 
     return inner
+
+
+@hookimpl
+def register_actions():
+    return [
+        Action(
+            name="debug-storages",
+            description="Debug storages",
+        )
+    ]
 
 
 async def s3_upload(request, datasette):
@@ -193,19 +205,17 @@ async def upload_complete(request, datasette):
 
 
 async def debug_storages(datasette, request):
-    if not await datasette.permission_allowed(request.actor, "debug-storages"):
+    if not await datasette.allowed(actor=request.actor, action="debug-storages"):
         raise Forbidden("Needs debug-storages permission")
     storages = await load_storages(datasette)
     return Response.json(
         {"storages": [obj.__dict__ for obj in storages]},
-        default=lambda obj: (
-            obj.isoformat() if isinstance(obj, datetime.datetime) else obj
-        ),
+        default=special_repr,
     )
 
 
 async def list_storage(datasette, request):
-    if not await datasette.permission_allowed(request.actor, "debug-storages"):
+    if not await datasette.allowed(actor=request.actor, action="debug-storages"):
         raise Forbidden("Needs debug-storages permission")
     name = request.url_vars["name"]
     storages = await load_storages(datasette)
@@ -333,6 +343,8 @@ async def local_upload(request, datasette):
 def special_repr(obj):
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
+    elif isinstance(obj, pathlib.Path):
+        return str(obj)
     elif hasattr(obj, "__dict__"):
         return obj.__dict__
     else:

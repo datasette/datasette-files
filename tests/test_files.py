@@ -372,3 +372,111 @@ async def test_config_skips_invalid_entries():
             files={"file": ("test.txt", b"test", "text/plain")},
         )
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_debug_storages_requires_permission():
+    """Test that /-/files/storages requires debug-storages permission."""
+    datasette = Datasette(memory=True)
+    await datasette.invoke_startup()
+
+    response = await datasette.client.get("/-/files/storages")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_debug_storages_with_permission():
+    """Test that /-/files/storages works with debug-storages permission."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        datasette = Datasette(
+            memory=True,
+            config={
+                "plugins": {
+                    "datasette-files": {
+                        "local-dirs": [
+                            {"name": "test-storage", "directory": tmpdir}
+                        ]
+                    }
+                },
+                "permissions": {
+                    "debug-storages": {"id": "*"}
+                }
+            }
+        )
+        await datasette.invoke_startup()
+
+        response = await datasette.client.get(
+            "/-/files/storages",
+            cookies={"ds_actor": datasette.sign({"a": {"id": "test-user"}}, "actor")}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "storages" in data
+        assert len(data["storages"]) == 1
+        assert data["storages"][0]["name"] == "test-storage"
+
+
+@pytest.mark.asyncio
+async def test_list_storage_requires_permission():
+    """Test that /-/files/storages/list/<name> requires debug-storages permission."""
+    datasette = Datasette(memory=True)
+    await datasette.invoke_startup()
+
+    response = await datasette.client.get("/-/files/storages/list/test-storage")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_storage_with_permission():
+    """Test that /-/files/storages/list/<name> works with permission."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a test file in the directory
+        with open(os.path.join(tmpdir, "existing-file.txt"), "w") as f:
+            f.write("test content")
+
+        datasette = Datasette(
+            memory=True,
+            config={
+                "plugins": {
+                    "datasette-files": {
+                        "local-dirs": [
+                            {"name": "test-storage", "directory": tmpdir}
+                        ]
+                    }
+                },
+                "permissions": {
+                    "debug-storages": {"id": "*"}
+                }
+            }
+        )
+        await datasette.invoke_startup()
+
+        response = await datasette.client.get(
+            "/-/files/storages/list/test-storage",
+            cookies={"ds_actor": datasette.sign({"a": {"id": "test-user"}}, "actor")}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "files" in data
+        assert len(data["files"]) == 1
+        assert data["files"][0]["name"] == "existing-file.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_storage_not_found():
+    """Test that /-/files/storages/list/<name> returns 404 for unknown storage."""
+    datasette = Datasette(
+        memory=True,
+        config={
+            "permissions": {
+                "debug-storages": {"id": "*"}
+            }
+        }
+    )
+    await datasette.invoke_startup()
+
+    response = await datasette.client.get(
+        "/-/files/storages/list/nonexistent",
+        cookies={"ds_actor": datasette.sign({"a": {"id": "test-user"}}, "actor")}
+    )
+    assert response.status_code == 404

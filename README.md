@@ -145,14 +145,3 @@ uv run datasette --root --secret 1 --internal internal.db data.db \
   -s plugins.datasette-files.local-dirs '[{"name": "uploads", "directory": "/tmp/uploads"}]' \
   --reload
 ```
-And if you're using `datasette-secrets` to manage any secrets for those plugins:
-```bash
-uv run datasette secrets generate-encryption-key > key.txt
-```
-Then add this to the `datasette` line:
-```bash
-uv run datasette . --internal internal.db --root --reload \
-  --secret 1 -s permissions.debug-storages.id root \
-  -s plugins.datasette-secrets.encryption-key "$(cat key.txt)" \
-  -s permissions.manage-secrets.id root 
-```
