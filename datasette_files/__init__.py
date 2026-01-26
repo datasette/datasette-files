@@ -371,3 +371,41 @@ def skip_csrf(datasette, scope):
     if path.startswith(datasette.urls.path("/-/files/local/upload/")):
         return True
     return False
+
+
+@hookimpl
+def register_files_storages(datasette):
+    """
+    Register LocalDirectoryStorage instances from plugin configuration.
+
+    Configuration in datasette.yaml:
+
+        plugins:
+          datasette-files:
+            local-dirs:
+              - name: uploads
+                directory: /path/to/uploads
+                base_url: https://example.com/files  # optional
+    """
+    config = datasette.plugin_config("datasette-files") or {}
+    local_dirs = config.get("local-dirs") or []
+
+    storages = []
+    for directory_config in local_dirs:
+        name = directory_config.get("name")
+        directory = directory_config.get("directory")
+
+        if not name or not directory:
+            continue
+
+        base_url = directory_config.get("base_url")
+
+        storages.append(
+            LocalDirectoryStorage(
+                name=name,
+                directory=directory,
+                base_url=base_url
+            )
+        )
+
+    return storages

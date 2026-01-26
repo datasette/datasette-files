@@ -224,3 +224,151 @@ async def test_local_upload_endpoint_no_file():
             assert "No file uploaded" in response.json()["error"]
         finally:
             pm.unregister(name="test_storage_plugin_nofile")
+
+
+@pytest.mark.asyncio
+async def test_config_based_local_directory_registration():
+    """Test that local directories can be configured via datasette.yaml config."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        datasette = Datasette(
+            memory=True,
+            config={
+                "plugins": {
+                    "datasette-files": {
+                        "local-dirs": [
+                            {
+                                "name": "config-storage",
+                                "directory": tmpdir,
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        await datasette.invoke_startup()
+
+        # Test GET request returns the upload form
+        response = await datasette.client.get("/-/files/local/upload/config-storage")
+        assert response.status_code == 200
+        assert "Upload to config-storage" in response.text
+
+        # Test POST with multipart form data
+        response = await datasette.client.post(
+            "/-/files/local/upload/config-storage",
+            files={"file": ("config-test.txt", b"Hello from config!", "text/plain")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["filename"] == "config-test.txt"
+
+        # Verify file was saved
+        saved_path = os.path.join(tmpdir, data["path"])
+        with open(saved_path, "rb") as f:
+            assert f.read() == b"Hello from config!"
+
+
+@pytest.mark.asyncio
+async def test_config_based_local_directory_with_base_url():
+    """Test that base_url is properly configured via config."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        datasette = Datasette(
+            memory=True,
+            config={
+                "plugins": {
+                    "datasette-files": {
+                        "local-dirs": [
+                            {
+                                "name": "with-base-url",
+                                "directory": tmpdir,
+                                "base_url": "https://cdn.example.com/files"
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        await datasette.invoke_startup()
+
+        # Upload a file
+        response = await datasette.client.post(
+            "/-/files/local/upload/with-base-url",
+            files={"file": ("test.txt", b"test content", "text/plain")},
+        )
+        assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_config_based_multiple_directories():
+    """Test that multiple directories can be configured."""
+    with tempfile.TemporaryDirectory() as tmpdir1:
+        with tempfile.TemporaryDirectory() as tmpdir2:
+            datasette = Datasette(
+                memory=True,
+                config={
+                    "plugins": {
+                        "datasette-files": {
+                            "local-dirs": [
+                                {"name": "storage-one", "directory": tmpdir1},
+                                {"name": "storage-two", "directory": tmpdir2},
+                            ]
+                        }
+                    }
+                }
+            )
+            await datasette.invoke_startup()
+
+            # Upload to first storage
+            response1 = await datasette.client.post(
+                "/-/files/local/upload/storage-one",
+                files={"file": ("file1.txt", b"content 1", "text/plain")},
+            )
+            assert response1.status_code == 200
+            assert response1.json()["filename"] == "file1.txt"
+
+            # Upload to second storage
+            response2 = await datasette.client.post(
+                "/-/files/local/upload/storage-two",
+                files={"file": ("file2.txt", b"content 2", "text/plain")},
+            )
+            assert response2.status_code == 200
+            assert response2.json()["filename"] == "file2.txt"
+
+            # Verify files are in correct directories
+            assert os.path.exists(os.path.join(tmpdir1, "file1.txt"))
+            assert os.path.exists(os.path.join(tmpdir2, "file2.txt"))
+            assert not os.path.exists(os.path.join(tmpdir1, "file2.txt"))
+            assert not os.path.exists(os.path.join(tmpdir2, "file1.txt"))
+
+
+@pytest.mark.asyncio
+async def test_config_skips_invalid_entries():
+    """Test that config entries missing name or directory are skipped."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        datasette = Datasette(
+            memory=True,
+            config={
+                "plugins": {
+                    "datasette-files": {
+                        "local-dirs": [
+                            {"name": "valid", "directory": tmpdir},
+                            {"name": "no-directory"},  # Missing directory
+                            {"directory": "/some/path"},  # Missing name
+                            {},  # Empty
+                        ]
+                    }
+                }
+            }
+        )
+        await datasette.invoke_startup()
+
+        # Valid storage should work
+        response = await datasette.client.get("/-/files/local/upload/valid")
+        assert response.status_code == 200
+
+        # Invalid storages should return 404
+        response = await datasette.client.post(
+            "/-/files/local/upload/no-directory",
+            files={"file": ("test.txt", b"test", "text/plain")},
+        )
+        assert response.status_code == 404

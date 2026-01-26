@@ -23,7 +23,31 @@ This plugin provides a storage abstraction for uploading and managing files in D
 
 The `LocalDirectoryStorage` provider stores uploaded files directly to a local filesystem directory. This is useful for development, self-hosted deployments, or scenarios where you want files stored on disk.
 
-To use it, create a plugin that registers the storage:
+##### Configuration via datasette.yaml
+
+The simplest way to configure local directory storage is via `datasette.yaml`:
+
+```yaml
+plugins:
+  datasette-files:
+    local-dirs:
+      - name: uploads
+        directory: /path/to/uploads
+        base_url: https://example.com/files  # optional
+      - name: attachments
+        directory: /path/to/attachments
+```
+
+Each entry in `local-dirs` requires:
+- `name`: A unique identifier for this storage (used in upload URLs)
+- `directory`: The filesystem path where files will be stored
+
+Optional:
+- `base_url`: Base URL for generating download links (used by `expiring_download_url`)
+
+##### Configuration via plugin
+
+Alternatively, you can register storages programmatically via a plugin:
 
 ```python
 # my_plugin.py
