@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "datasette-files"
 version = "0.1"
-description = "Upload files to Datasette"
+description = "File management for Datasette"
 readme = "README.md"
 authors = [{name = "Datasette"}]
 license = "Apache-2.0"
@@ -14,11 +14,8 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a23",
-    "datasette-secrets",
+    "datasette>=1.0a24",
     "python-ulid",
-    "boto3",
-    "typing_extensions"
 ]
 
 [dependency-groups]
@@ -43,4 +40,4 @@ include = ["datasette_files"]
 asyncio_mode = "strict"
 
 [tool.setuptools.package-data]
-datasette_files = ["templates/*"]
+datasette_files = ["templates/*", "static/*"]

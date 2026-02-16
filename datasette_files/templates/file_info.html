@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}{{ file.filename }}{% endblock %}
+
+{% block content %}
+<h1>{{ file.filename }}</h1>
+
+<table>
+    <tr><th>File ID</th><td>{{ file.id }}</td></tr>
+    <tr><th>Filename</th><td>{{ file.filename }}</td></tr>
+    <tr><th>Content Type</th><td>{{ file.content_type or "unknown" }}</td></tr>
+    <tr><th>Size</th><td>{{ file.size }} bytes</td></tr>
+    {% if file.content_hash %}
+    <tr><th>Content Hash</th><td>{{ file.content_hash }}</td></tr>
+    {% endif %}
+    {% if file.uploaded_by %}
+    <tr><th>Uploaded By</th><td>{{ file.uploaded_by }}</td></tr>
+    {% endif %}
+    <tr><th>Created</th><td>{{ file.created_at }}</td></tr>
+</table>
+
+{% if file.content_type and file.content_type.startswith("image/") %}
+<p><img src="/-/files/{{ file.id }}/download" alt="{{ file.filename }}" style="max-width: 600px;"></p>
+{% endif %}
+
+<p><a href="/-/files/{{ file.id }}/download">Download {{ file.filename }}</a></p>
+{% endblock %}
