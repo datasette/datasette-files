@@ -1,11 +1,15 @@
 import json
+import re
 from datasette import hookimpl, Response, NotFound
 from datasette.plugins import pm
 from datasette.utils import await_me_maybe
+from markupsafe import Markup
 from ulid import ULID
 from . import hookspecs
 from .base import StorageCapabilities
 from .filesystem import FilesystemStorage
+
+_FILE_ID_RE = re.compile(r"^df-[a-z0-9]{26}$")
 
 pm.add_hookspecs(hookspecs)
 
@@ -255,6 +259,45 @@ async def file_download(request, datasette):
     )
 
 
+async def batch_json(request, datasette):
+    """GET /-/files/batch.json?id=df-abc&id=df-def — bulk file metadata."""
+    ids = request.args.getlist("id")
+    # Filter to valid file IDs only
+    ids = [i for i in ids if _FILE_ID_RE.match(i)]
+    if not ids:
+        return Response.json({"files": {}})
+
+    placeholders = ",".join("?" * len(ids))
+    db = datasette.get_internal_database()
+    rows = (
+        await db.execute(
+            f"""
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height
+            FROM datasette_files f
+            WHERE f.id IN ({placeholders})
+            """,
+            ids,
+        )
+    ).rows
+
+    files = {}
+    for row in rows:
+        row = dict(row)
+        file_id = row["id"]
+        files[file_id] = {
+            "id": file_id,
+            "filename": row["filename"],
+            "content_type": row["content_type"],
+            "size": row["size"],
+            "width": row["width"],
+            "height": row["height"],
+            "download_url": f"/-/files/{file_id}/download",
+            "info_url": f"/-/files/{file_id}",
+        }
+
+    return Response.json({"files": files})
+
+
 async def sources_json(request, datasette):
     """GET /-/files/sources.json — list all configured sources."""
     sources = []
@@ -279,12 +322,36 @@ async def sources_json(request, datasette):
 @hookimpl
 def register_routes():
     return [
+        (r"^/-/files/batch\.json$", batch_json),
         (r"^/-/files/sources\.json$", sources_json),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)\.json$", file_json),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/download$", file_download),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)$", file_info),
     ]
+
+
+@hookimpl
+def render_cell(value, column, table, database, datasette, request):
+    if not isinstance(value, str) or not _FILE_ID_RE.match(value):
+        return None
+    return Markup(
+        '<datasette-file file-id="{v}">'
+        '<a href="/-/files/{v}">{v}</a>'
+        "</datasette-file>".format(v=value)
+    )
+
+
+@hookimpl
+def extra_js_urls(template, database, table, columns, view_name, request, datasette):
+    if view_name in ("table", "row", "database"):
+        return [
+            {
+                "url": "/-/static-plugins/datasette_files/datasette-file-cell.js",
+                "module": True,
+            }
+        ]
+    return []
 
 
 @hookimpl
