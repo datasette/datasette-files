@@ -750,3 +750,237 @@ async def test_file_info_actor_permission(tmp_path):
         cookies={"ds_actor": ds.sign({"a": {"id": "bob"}}, "actor")},
     )
     assert response.status_code == 403
+
+
+# --- search_text column ---
+
+
+@pytest.mark.asyncio
+async def test_search_text_column_exists(datasette_with_files):
+    ds = datasette_with_files
+    await ds.invoke_startup()
+
+    db = ds.get_internal_database()
+    columns = (await db.execute("PRAGMA table_info(datasette_files)")).rows
+    col_names = {row["name"] for row in columns}
+    assert "search_text" in col_names
+
+
+@pytest.mark.asyncio
+async def test_search_text_in_fts(datasette_browse_allowed, upload_dir):
+    """FTS index includes search_text column."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="notes.txt", content=b"some file")
+    file_id = data["file_id"]
+
+    # Directly update search_text
+    db = ds.get_internal_database()
+    await db.execute_write(
+        "UPDATE datasette_files SET search_text = ? WHERE id = ?",
+        ["quarterly revenue analysis financial", file_id],
+    )
+
+    # FTS should now match on the search_text
+    response = await ds.client.get("/-/files/search.json?q=revenue")
+    assert response.status_code == 200
+    files = response.json()["files"]
+    assert len(files) == 1
+    assert files[0]["id"] == file_id
+
+
+@pytest.mark.asyncio
+async def test_search_text_not_in_filename_match(datasette_browse_allowed, upload_dir):
+    """search_text doesn't interfere with filename-only searches."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="report.txt", content=b"data")
+    await _upload_file(ds, filename="other.txt", content=b"data")
+
+    # Update search_text for other.txt (shouldn't match "report" query)
+    db = ds.get_internal_database()
+    rows = (await db.execute("SELECT id FROM datasette_files WHERE filename = 'other.txt'")).rows
+    other_id = rows[0]["id"]
+    await db.execute_write(
+        "UPDATE datasette_files SET search_text = ? WHERE id = ?",
+        ["unrelated content", other_id],
+    )
+
+    response = await ds.client.get("/-/files/search.json?q=report")
+    assert response.status_code == 200
+    files = response.json()["files"]
+    assert len(files) == 1
+    assert files[0]["filename"] == "report.txt"
+
+
+# --- files-edit action ---
+
+
+@pytest.mark.asyncio
+async def test_files_edit_action_registered(datasette_with_files):
+    ds = datasette_with_files
+    await ds.invoke_startup()
+    assert "files-edit" in ds.actions
+
+
+@pytest.mark.asyncio
+async def test_edit_search_text_denied_without_permission(datasette_browse_allowed, upload_dir):
+    """POST to file info page without files-edit permission returns 403."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="noedit.txt", content=b"content")
+    file_id = data["file_id"]
+
+    response = await ds.client.post(
+        f"/-/files/{file_id}",
+        data={"search_text": "test"},
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_edit_search_text_with_permission(tmp_path):
+    """POST to file info page with files-edit permission updates search_text."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "editable": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-edit": {
+                    "editable": {
+                        "allow": {"id": "editor"},
+                    },
+                },
+            },
+        },
+    )
+
+    data = await _upload_file(ds, source="editable", filename="doc.txt", content=b"hello")
+    file_id = data["file_id"]
+
+    # Editor can update search_text
+    editor_cookie = {"ds_actor": ds.sign({"a": {"id": "editor"}}, "actor")}
+    response = await ds.client.post(
+        f"/-/files/{file_id}",
+        data={"search_text": "quarterly financial report Q4 2025"},
+        cookies=editor_cookie,
+    )
+    assert response.status_code == 200
+    assert "Search text saved" in response.text
+
+    # Verify the search_text was persisted
+    db = ds.get_internal_database()
+    row = (await db.execute("SELECT search_text FROM datasette_files WHERE id = ?", [file_id])).first()
+    assert row["search_text"] == "quarterly financial report Q4 2025"
+
+    # Verify FTS can find the file by search_text
+    response = await ds.client.get("/-/files/search.json?q=quarterly")
+    assert response.status_code == 200
+    files = response.json()["files"]
+    assert len(files) == 1
+    assert files[0]["id"] == file_id
+
+
+@pytest.mark.asyncio
+async def test_edit_form_visible_with_permission(tmp_path):
+    """File info page shows edit form when actor has files-edit permission."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "editable": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-edit": {
+                    "editable": {
+                        "allow": {"id": "editor"},
+                    },
+                },
+            },
+        },
+    )
+
+    data = await _upload_file(ds, source="editable", filename="doc.txt", content=b"hello")
+    file_id = data["file_id"]
+
+    # Editor sees the textarea form
+    editor_cookie = {"ds_actor": ds.sign({"a": {"id": "editor"}}, "actor")}
+    response = await ds.client.get(f"/-/files/{file_id}", cookies=editor_cookie)
+    assert response.status_code == 200
+    assert "<textarea" in response.text
+    assert "search_text" in response.text
+
+    # Anonymous user sees "No search text set" instead of form
+    response = await ds.client.get(f"/-/files/{file_id}")
+    assert response.status_code == 200
+    assert "<textarea" not in response.text
+    assert "No search text set" in response.text
+
+
+@pytest.mark.asyncio
+async def test_edit_search_text_non_editor_denied(tmp_path):
+    """Non-editor actor cannot POST search_text even with browse permission."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "editable": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-edit": {
+                    "editable": {
+                        "allow": {"id": "editor"},
+                    },
+                },
+            },
+        },
+    )
+
+    data = await _upload_file(ds, source="editable", filename="doc.txt", content=b"hello")
+    file_id = data["file_id"]
+
+    # Bob can browse but not edit
+    bob_cookie = {"ds_actor": ds.sign({"a": {"id": "bob"}}, "actor")}
+    response = await ds.client.post(
+        f"/-/files/{file_id}",
+        data={"search_text": "hacked"},
+        cookies=bob_cookie,
+    )
+    assert response.status_code == 403
+
+    # Verify search_text was NOT changed
+    db = ds.get_internal_database()
+    row = (await db.execute("SELECT search_text FROM datasette_files WHERE id = ?", [file_id])).first()
+    assert row["search_text"] == ""

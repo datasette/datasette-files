@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS datasette_files (
     uploaded_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     metadata TEXT DEFAULT '{}',
+    search_text TEXT DEFAULT '',
     UNIQUE(source_id, path)
 );
 """
@@ -55,6 +56,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS datasette_files_fts USING fts5(
     id UNINDEXED,
     filename,
     content_type,
+    search_text,
     content='datasette_files',
     content_rowid='rowid'
 );
@@ -62,20 +64,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS datasette_files_fts USING fts5(
 
 FTS_TRIGGERS_SQL = """
 CREATE TRIGGER IF NOT EXISTS datasette_files_ai AFTER INSERT ON datasette_files BEGIN
-    INSERT INTO datasette_files_fts(rowid, id, filename, content_type)
-    VALUES (new.rowid, new.id, new.filename, new.content_type);
+    INSERT INTO datasette_files_fts(rowid, id, filename, content_type, search_text)
+    VALUES (new.rowid, new.id, new.filename, new.content_type, new.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS datasette_files_ad AFTER DELETE ON datasette_files BEGIN
-    INSERT INTO datasette_files_fts(datasette_files_fts, rowid, id, filename, content_type)
-    VALUES ('delete', old.rowid, old.id, old.filename, old.content_type);
+    INSERT INTO datasette_files_fts(datasette_files_fts, rowid, id, filename, content_type, search_text)
+    VALUES ('delete', old.rowid, old.id, old.filename, old.content_type, old.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS datasette_files_au AFTER UPDATE ON datasette_files BEGIN
-    INSERT INTO datasette_files_fts(datasette_files_fts, rowid, id, filename, content_type)
-    VALUES ('delete', old.rowid, old.id, old.filename, old.content_type);
-    INSERT INTO datasette_files_fts(rowid, id, filename, content_type)
-    VALUES (new.rowid, new.id, new.filename, new.content_type);
+    INSERT INTO datasette_files_fts(datasette_files_fts, rowid, id, filename, content_type, search_text)
+    VALUES ('delete', old.rowid, old.id, old.filename, old.content_type, old.search_text);
+    INSERT INTO datasette_files_fts(rowid, id, filename, content_type, search_text)
+    VALUES (new.rowid, new.id, new.filename, new.content_type, new.search_text);
 END;
 """
 
@@ -113,6 +115,12 @@ def register_actions():
             resource_class=FileSourceResource,
         ),
         Action(
+            name="files-edit",
+            abbr="fe",
+            description="Edit file metadata in a source",
+            resource_class=FileSourceResource,
+        ),
+        Action(
             name="files-delete",
             abbr="fd",
             description="Delete files from a source",
@@ -143,7 +151,7 @@ def files_permission_resources_sql(datasette, actor, action):
               allow:
                 id: alice
     """
-    if action not in ("files-browse", "files-upload", "files-delete"):
+    if action not in ("files-browse", "files-upload", "files-edit", "files-delete"):
         return None
 
     config = datasette.config or {}
@@ -229,14 +237,35 @@ def startup(datasette):
     async def inner():
         db = datasette.get_internal_database()
         await db.execute_write_script(CREATE_SQL)
+
+        # Migrate: add search_text column if missing (pre-existing databases)
+        columns = (
+            await db.execute("PRAGMA table_info(datasette_files)")
+        ).rows
+        col_names = {row["name"] for row in columns}
+        if "search_text" not in col_names:
+            await db.execute_write(
+                "ALTER TABLE datasette_files ADD COLUMN search_text TEXT DEFAULT ''"
+            )
+
+        # Drop and recreate FTS table + triggers to ensure schema matches
+        # (safe because FTS is a secondary index rebuilt from content table)
+        await db.execute_write_script(
+            """
+            DROP TRIGGER IF EXISTS datasette_files_ai;
+            DROP TRIGGER IF EXISTS datasette_files_ad;
+            DROP TRIGGER IF EXISTS datasette_files_au;
+            DROP TABLE IF EXISTS datasette_files_fts;
+            """
+        )
         await db.execute_write_script(FTS_SQL)
         await db.execute_write_script(FTS_TRIGGERS_SQL)
 
-        # Backfill FTS for any existing rows not yet indexed
+        # Backfill FTS from content table
         await db.execute_write(
             """
-            INSERT OR IGNORE INTO datasette_files_fts(rowid, id, filename, content_type)
-            SELECT rowid, id, filename, content_type FROM datasette_files
+            INSERT INTO datasette_files_fts(rowid, id, filename, content_type, search_text)
+            SELECT rowid, id, filename, content_type, search_text FROM datasette_files
             """
         )
 
@@ -382,7 +411,10 @@ async def _get_file_record(datasette, file_id):
 
 
 async def file_info(request, datasette):
-    """GET /-/files/{file_id} - HTML info page about a file."""
+    """GET/POST /-/files/{file_id} - HTML info page about a file.
+
+    POST updates the search_text field (requires files-edit permission).
+    """
     file_id = request.url_vars["file_id"]
     row = await _get_file_record(datasette, file_id)
     if row is None:
@@ -390,10 +422,42 @@ async def file_info(request, datasette):
 
     await _check_browse_permission(datasette, request, row["source_slug"])
 
+    saved = False
+
+    if request.method == "POST":
+        # Check files-edit permission
+        can_edit = await datasette.allowed(
+            action="files-edit",
+            resource=FileSourceResource(row["source_slug"]),
+            actor=request.actor,
+        )
+        if not can_edit:
+            raise Forbidden("Permission denied: files-edit on source " + row["source_slug"])
+
+        form = await request.post_vars()
+        search_text = form.get("search_text", "")
+
+        db = datasette.get_internal_database()
+        await db.execute_write(
+            "UPDATE datasette_files SET search_text = :search_text WHERE id = :id",
+            {"search_text": search_text, "id": file_id},
+        )
+
+        # Re-fetch the updated row
+        row = await _get_file_record(datasette, file_id)
+        saved = True
+
+    # Check if current actor can edit (for showing/hiding the form)
+    can_edit = await datasette.allowed(
+        action="files-edit",
+        resource=FileSourceResource(row["source_slug"]),
+        actor=request.actor,
+    )
+
     return Response.html(
         await datasette.render_template(
             "file_info.html",
-            {"file": dict(row)},
+            {"file": dict(row), "can_edit": can_edit, "saved": saved},
             request=request,
         )
     )
@@ -644,7 +708,16 @@ def extra_js_urls(template, database, table, columns, view_name, request, datase
     return []
 
 
+_FILE_INFO_PATH_RE = re.compile(r"^/-/files/df-[a-z0-9]{26}$")
+
+
 @hookimpl
 def skip_csrf(datasette, scope):
-    if scope["type"] == "http" and scope["path"].startswith("/-/files/upload/"):
+    if scope["type"] != "http":
+        return False
+    path = scope["path"]
+    if path.startswith("/-/files/upload/"):
+        return True
+    # POST to file info page (search_text edit form)
+    if _FILE_INFO_PATH_RE.match(path):
         return True
