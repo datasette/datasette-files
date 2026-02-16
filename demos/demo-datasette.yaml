@@ -1,0 +1,7 @@
+plugins:
+  datasette-files:
+    sources:
+      demo-uploads:
+        storage: filesystem
+        config:
+          root: demo-uploads
