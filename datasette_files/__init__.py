@@ -1,6 +1,7 @@
 import json
 import re
-from datasette import hookimpl, Response, NotFound
+from datasette import hookimpl, Response, NotFound, Forbidden
+from datasette.permissions import Action, PermissionSQL, Resource
 from datasette.plugins import pm
 from datasette.utils import await_me_maybe
 from markupsafe import Markup
@@ -49,6 +50,156 @@ CREATE TABLE IF NOT EXISTS datasette_files (
 );
 """
 
+FTS_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS datasette_files_fts USING fts5(
+    id UNINDEXED,
+    filename,
+    content_type,
+    content='datasette_files',
+    content_rowid='rowid'
+);
+"""
+
+FTS_TRIGGERS_SQL = """
+CREATE TRIGGER IF NOT EXISTS datasette_files_ai AFTER INSERT ON datasette_files BEGIN
+    INSERT INTO datasette_files_fts(rowid, id, filename, content_type)
+    VALUES (new.rowid, new.id, new.filename, new.content_type);
+END;
+
+CREATE TRIGGER IF NOT EXISTS datasette_files_ad AFTER DELETE ON datasette_files BEGIN
+    INSERT INTO datasette_files_fts(datasette_files_fts, rowid, id, filename, content_type)
+    VALUES ('delete', old.rowid, old.id, old.filename, old.content_type);
+END;
+
+CREATE TRIGGER IF NOT EXISTS datasette_files_au AFTER UPDATE ON datasette_files BEGIN
+    INSERT INTO datasette_files_fts(datasette_files_fts, rowid, id, filename, content_type)
+    VALUES ('delete', old.rowid, old.id, old.filename, old.content_type);
+    INSERT INTO datasette_files_fts(rowid, id, filename, content_type)
+    VALUES (new.rowid, new.id, new.filename, new.content_type);
+END;
+"""
+
+
+# --- Resource and Action definitions ---
+
+
+class FileSourceResource(Resource):
+    """A file source in datasette-files."""
+
+    name = "file-source"
+    parent_class = None  # Top-level resource
+
+    def __init__(self, source_slug: str):
+        super().__init__(parent=source_slug, child=None)
+
+    @classmethod
+    async def resources_sql(cls, datasette) -> str:
+        return "SELECT slug AS parent, NULL AS child FROM datasette_files_sources"
+
+
+@hookimpl
+def register_actions():
+    return [
+        Action(
+            name="files-browse",
+            abbr="fb",
+            description="Browse and search files in a source",
+            resource_class=FileSourceResource,
+        ),
+        Action(
+            name="files-upload",
+            abbr="fu",
+            description="Upload files to a source",
+            resource_class=FileSourceResource,
+        ),
+        Action(
+            name="files-delete",
+            abbr="fd",
+            description="Delete files from a source",
+            resource_class=FileSourceResource,
+        ),
+    ]
+
+
+@hookimpl(specname="permission_resources_sql")
+def files_permission_resources_sql(datasette, actor, action):
+    """Provide permission rules for files-browse, files-upload, files-delete.
+
+    By default no access is granted. Permissions must be explicitly configured
+    via datasette.yaml permissions block.
+
+    Supports two config patterns:
+
+    Global (all sources):
+        permissions:
+          files-browse: true
+
+    Per-source:
+        permissions:
+          files-browse:
+            my-source:
+              allow: true
+            secret-source:
+              allow:
+                id: alice
+    """
+    if action not in ("files-browse", "files-upload", "files-delete"):
+        return None
+
+    config = datasette.config or {}
+    permissions_config = config.get("permissions") or {}
+    action_config = permissions_config.get(action)
+    if action_config is None:
+        return None
+
+    from datasette.utils import actor_matches_allow
+
+    rules = []
+    params = {}
+
+    # Check if this is a simple allow block (global) or a per-source dict
+    if isinstance(action_config, bool) or (
+        isinstance(action_config, dict)
+        and ("id" in action_config or "unauthenticated" in action_config)
+    ):
+        # Global allow block: applies to all sources
+        allowed = actor_matches_allow(actor, action_config)
+        i = len(rules)
+        rules.append(
+            f"SELECT NULL AS parent, NULL AS child, :dfp_allow_{i} AS allow, :dfp_reason_{i} AS reason"
+        )
+        params[f"dfp_allow_{i}"] = 1 if allowed else 0
+        params[f"dfp_reason_{i}"] = f"datasette-files config {'allow' if allowed else 'deny'} for {action}"
+    elif isinstance(action_config, dict):
+        # Per-source permissions: {source_slug: allow_block, ...}
+        for source_slug, source_allow_block in action_config.items():
+            # source_allow_block can be a simple allow block or {"allow": ...}
+            if isinstance(source_allow_block, dict) and "allow" in source_allow_block:
+                allow_block = source_allow_block["allow"]
+            else:
+                allow_block = source_allow_block
+            allowed = actor_matches_allow(actor, allow_block)
+            i = len(rules)
+            rules.append(
+                f"SELECT :dfp_parent_{i} AS parent, NULL AS child, :dfp_allow_{i} AS allow, :dfp_reason_{i} AS reason"
+            )
+            params[f"dfp_parent_{i}"] = source_slug
+            params[f"dfp_allow_{i}"] = 1 if allowed else 0
+            params[f"dfp_reason_{i}"] = (
+                f"datasette-files config {'allow' if allowed else 'deny'} for {action} on {source_slug}"
+            )
+
+    if not rules:
+        return None
+
+    return PermissionSQL(
+        sql="\nUNION ALL\n".join(rules),
+        params=params,
+    )
+
+
+# --- Helpers ---
+
 
 def _sanitize_filename(filename):
     """Remove path separators and other dangerous characters from a filename."""
@@ -59,11 +210,35 @@ def _sanitize_filename(filename):
     return filename or "unnamed"
 
 
+async def _check_browse_permission(datasette, request, source_slug):
+    """Check files-browse permission for a source. Raises Forbidden if denied."""
+    allowed = await datasette.allowed(
+        action="files-browse",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+    if not allowed:
+        raise Forbidden("Permission denied: files-browse on source " + source_slug)
+
+
+# --- Startup ---
+
+
 @hookimpl
 def startup(datasette):
     async def inner():
         db = datasette.get_internal_database()
         await db.execute_write_script(CREATE_SQL)
+        await db.execute_write_script(FTS_SQL)
+        await db.execute_write_script(FTS_TRIGGERS_SQL)
+
+        # Backfill FTS for any existing rows not yet indexed
+        await db.execute_write(
+            """
+            INSERT OR IGNORE INTO datasette_files_fts(rowid, id, filename, content_type)
+            SELECT rowid, id, filename, content_type FROM datasette_files
+            """
+        )
 
         # Collect storage types from plugins
         storage_types = dict(BUILT_IN_STORAGE_TYPES)
@@ -125,8 +300,11 @@ def startup(datasette):
     return inner
 
 
+# --- Route handlers ---
+
+
 async def upload_file(request, datasette):
-    """POST /-/files/upload/{source_slug} — upload a file."""
+    """POST /-/files/upload/{source_slug} - upload a file."""
     source_slug = request.url_vars["source_slug"]
     if source_slug not in _sources:
         raise NotFound(f"Source not found: {source_slug}")
@@ -204,11 +382,13 @@ async def _get_file_record(datasette, file_id):
 
 
 async def file_info(request, datasette):
-    """GET /-/files/{file_id} — HTML info page about a file."""
+    """GET /-/files/{file_id} - HTML info page about a file."""
     file_id = request.url_vars["file_id"]
     row = await _get_file_record(datasette, file_id)
     if row is None:
         raise NotFound(f"File not found: {file_id}")
+
+    await _check_browse_permission(datasette, request, row["source_slug"])
 
     return Response.html(
         await datasette.render_template(
@@ -220,21 +400,25 @@ async def file_info(request, datasette):
 
 
 async def file_json(request, datasette):
-    """GET /-/files/{file_id}.json — file metadata as JSON."""
+    """GET /-/files/{file_id}.json - file metadata as JSON."""
     file_id = request.url_vars["file_id"]
     row = await _get_file_record(datasette, file_id)
     if row is None:
         raise NotFound(f"File not found: {file_id}")
+
+    await _check_browse_permission(datasette, request, row["source_slug"])
 
     return Response.json(dict(row))
 
 
 async def file_download(request, datasette):
-    """GET /-/files/{file_id}/download — download the file."""
+    """GET /-/files/{file_id}/download - download the file."""
     file_id = request.url_vars["file_id"]
     row = await _get_file_record(datasette, file_id)
     if row is None:
         raise NotFound(f"File not found: {file_id}")
+
+    await _check_browse_permission(datasette, request, row["source_slug"])
 
     source_slug = row["source_slug"]
     if source_slug not in _sources:
@@ -260,7 +444,7 @@ async def file_download(request, datasette):
 
 
 async def batch_json(request, datasette):
-    """GET /-/files/batch.json?id=df-abc&id=df-def — bulk file metadata."""
+    """GET /-/files/batch.json?id=df-abc&id=df-def - bulk file metadata."""
     ids = request.args.getlist("id")
     # Filter to valid file IDs only
     ids = [i for i in ids if _FILE_ID_RE.match(i)]
@@ -272,8 +456,10 @@ async def batch_json(request, datasette):
     rows = (
         await db.execute(
             f"""
-            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   s.slug as source_slug
             FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
             WHERE f.id IN ({placeholders})
             """,
             ids,
@@ -284,6 +470,14 @@ async def batch_json(request, datasette):
     for row in rows:
         row = dict(row)
         file_id = row["id"]
+        # Check browse permission for this file's source
+        allowed = await datasette.allowed(
+            action="files-browse",
+            resource=FileSourceResource(row["source_slug"]),
+            actor=request.actor,
+        )
+        if not allowed:
+            continue
         files[file_id] = {
             "id": file_id,
             "filename": row["filename"],
@@ -299,7 +493,7 @@ async def batch_json(request, datasette):
 
 
 async def sources_json(request, datasette):
-    """GET /-/files/sources.json — list all configured sources."""
+    """GET /-/files/sources.json - list all configured sources."""
     sources = []
     for slug, meta in _source_meta.items():
         caps = meta["capabilities"]
@@ -319,9 +513,105 @@ async def sources_json(request, datasette):
     return Response.json({"sources": sources})
 
 
+async def search_files(request, datasette):
+    """GET /-/files/search - search files across sources the actor can browse."""
+    q = request.args.get("q", "").strip()
+    source_filter = request.args.get("source", "").strip()
+
+    db = datasette.get_internal_database()
+
+    # Get allowed source slugs via the permissions SQL CTE.
+    # We execute this as a separate query because the CTE uses WITH clauses
+    # that cannot be nested inside another query alongside FTS MATCH.
+    resources_sql = await datasette.allowed_resources_sql(
+        action="files-browse",
+        actor=request.actor,
+    )
+    allowed_rows = (await db.execute(resources_sql.sql, resources_sql.params)).rows
+    allowed_slugs = [row["parent"] for row in allowed_rows]
+
+    if not allowed_slugs:
+        files = []
+    elif q:
+        # FTS search filtered to allowed sources
+        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        search_sql = """
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   f.created_at, f.uploaded_by, s.slug as source_slug
+            FROM datasette_files_fts fts
+            JOIN datasette_files f ON fts.id = f.id
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE datasette_files_fts MATCH :q
+            AND s.slug IN ({placeholders})
+            {source_where}
+            ORDER BY fts.rank
+            LIMIT 50
+        """.format(
+            placeholders=placeholders,
+            source_where="AND s.slug = :source_filter" if source_filter else "",
+        )
+        params = {"q": q}
+        for i, slug in enumerate(allowed_slugs):
+            params[f"_slug_{i}"] = slug
+        if source_filter:
+            params["source_filter"] = source_filter
+        files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
+    else:
+        # No query — list recent files filtered to allowed sources
+        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        search_sql = """
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   f.created_at, f.uploaded_by, s.slug as source_slug
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE s.slug IN ({placeholders})
+            {source_where}
+            ORDER BY f.created_at DESC
+            LIMIT 50
+        """.format(
+            placeholders=placeholders,
+            source_where="AND s.slug = :source_filter" if source_filter else "",
+        )
+        params = {}
+        for i, slug in enumerate(allowed_slugs):
+            params[f"_slug_{i}"] = slug
+        if source_filter:
+            params["source_filter"] = source_filter
+        files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
+
+    # The allowed_slugs already represent the browsable sources
+    browsable_sources = allowed_slugs
+
+    is_json = request.path.endswith(".json")
+    if is_json:
+        return Response.json(
+            {
+                "q": q,
+                "source": source_filter,
+                "files": files,
+                "sources": browsable_sources,
+            }
+        )
+
+    return Response.html(
+        await datasette.render_template(
+            "files_search.html",
+            {
+                "q": q,
+                "source_filter": source_filter,
+                "files": files,
+                "sources": browsable_sources,
+            },
+            request=request,
+        )
+    )
+
+
 @hookimpl
 def register_routes():
     return [
+        (r"^/-/files/search\.json$", search_files),
+        (r"^/-/files/search$", search_files),
         (r"^/-/files/batch\.json$", batch_json),
         (r"^/-/files/sources\.json$", sources_json),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),

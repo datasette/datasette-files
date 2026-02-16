@@ -256,15 +256,52 @@ class FileSourceResource(Resource):
 
 | Action | Resource | Default | Description |
 |--------|----------|---------|-------------|
-| `files-browse` | FileSourceResource | allow | View/browse files in a source |
-| `files-download` | FileSourceResource | allow | Download files from a source |
+| `files-browse` | FileSourceResource | **deny** | Browse, search, view, and download files in a source |
 | `files-upload` | FileSourceResource | deny | Upload files to a source |
 | `files-delete` | FileSourceResource | deny | Delete files from a source |
 | `files-manage-sources` | None (global) | deny | Administrative access |
 
+All file access actions default to **deny**. Permissions must be explicitly granted via `datasette.yaml`.
+
+### Permission Configuration
+
+Permissions are configured in the `permissions:` block of `datasette.yaml`.
+
+**Global (all sources):**
+
+```yaml
+permissions:
+  files-browse: true                   # Allow everyone
+  files-browse:
+    id: alice                          # Allow only alice
+```
+
+**Per-source:**
+
+```yaml
+permissions:
+  files-browse:
+    public-files:
+      allow: true                      # Everyone can browse public-files
+    private-files:
+      allow:
+        id: alice                      # Only alice can browse private-files
+```
+
+The plugin implements `permission_resources_sql` to translate this config into Datasette's SQL permission system. Global rules cascade to all sources; per-source rules apply at the parent level.
+
+### Search
+
+The search endpoint (`/-/files/search`) uses Datasette's `allowed_resources_sql()` to get the list of sources the current actor can browse, then filters FTS and listing queries to only those sources. This means:
+
+- Anonymous users see nothing unless explicitly granted `files-browse`
+- Search results are filtered server-side — no client-side permission checks
+- FTS5 indexes filename and content_type for fast text search
+- The search endpoint supports both HTML and JSON (`.json` suffix)
+
 ### Composition with Table Permissions
 
-Viewing a file through a table cell requires both `view-table` on the table AND `files-download` on the file's source. If a user can see the table but lacks `files-download`, they see the filename but the link is disabled.
+Viewing a file through a table cell requires both `view-table` on the table AND `files-browse` on the file's source. If a user can see the table but lacks `files-browse`, the batch.json endpoint filters out inaccessible files.
 
 ### File Ownership
 
@@ -275,10 +312,13 @@ Viewing a file through a table cell requires both `view-table` on the table AND 
 ### URL Scheme
 
 ```
+/-/files/search                                  # Search/browse files (HTML)
+/-/files/search.json?q=&source=                  # Search/browse files (JSON)
 /-/files/{file_id}                               # HTML info page about the file
 /-/files/{file_id}/download                      # Download file (302 redirect or stream content)
 /-/files/{file_id}/thumbnail?w=200&h=200         # Thumbnail
 /-/files/{file_id}.json                          # JSON metadata
+/-/files/batch.json?id=df-abc&id=df-def          # Bulk file metadata
 /-/files/browse/{source_slug}                    # Browse files in a source
 /-/files/upload/{source_slug}                    # Upload endpoint
 /-/files/sync/{source_slug}                      # Trigger sync for a source
@@ -372,11 +412,14 @@ Writes to `metadata_columns` via `datasette.set_column_metadata()`.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
+| GET | `/-/files/search?q=&source=` | Search files (HTML, permission-filtered) |
+| GET | `/-/files/search.json?q=&source=` | Search files (JSON, permission-filtered) |
 | GET | `/-/files/sources.json` | List all sources with capabilities |
+| GET | `/-/files/batch.json?id=df-abc&id=df-def` | Bulk file metadata (permission-filtered) |
 | GET | `/-/files/browse/{source}.json?cursor=&limit=` | List files in source |
-| GET | `/-/files/{file_id}` | HTML file info page |
-| GET | `/-/files/{file_id}.json` | File metadata as JSON |
-| GET | `/-/files/{file_id}/download` | Download file (302 or stream) |
+| GET | `/-/files/{file_id}` | HTML file info page (requires files-browse) |
+| GET | `/-/files/{file_id}.json` | File metadata as JSON (requires files-browse) |
+| GET | `/-/files/{file_id}/download` | Download file (requires files-browse) |
 | GET | `/-/files/{file_id}/thumbnail?w=&h=` | Thumbnail |
 | POST | `/-/files/upload/{source}` | Upload file (filesystem: multipart, others: returns UploadInstructions) |
 | POST | `/-/files/sync/{source}` | Trigger source sync |
