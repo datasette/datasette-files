@@ -56,17 +56,23 @@ def datasette_browse_allowed(upload_dir):
     )
 
 
-async def _upload_file(ds, source="test-uploads", filename="test.txt",
-                       content=b"Hello from test!", content_type="text/plain"):
+async def _upload_file(
+    ds,
+    source="test-uploads",
+    filename="test.txt",
+    content=b"Hello from test!",
+    content_type="text/plain",
+):
     """Helper to upload a file and return the response JSON."""
     response = await ds.client.post(
         f"/-/files/upload/{source}",
         content=(
             b"--boundary\r\n"
-            b'Content-Disposition: form-data; name="file"; filename="' + filename.encode() + b'"\r\n'
+            b'Content-Disposition: form-data; name="file"; filename="'
+            + filename.encode()
+            + b'"\r\n'
             b"Content-Type: " + content_type.encode() + b"\r\n"
-            b"\r\n"
-            + content + b"\r\n"
+            b"\r\n" + content + b"\r\n"
             b"--boundary--\r\n"
         ),
         headers={
@@ -463,8 +469,15 @@ async def test_search_json_empty(datasette_browse_allowed):
 async def test_search_json_with_query(datasette_browse_allowed, upload_dir):
     """Search with a query finds matching files."""
     ds = datasette_browse_allowed
-    await _upload_file(ds, filename="report.pdf", content=b"pdf content", content_type="application/pdf")
-    await _upload_file(ds, filename="photo.jpg", content=b"jpg content", content_type="image/jpeg")
+    await _upload_file(
+        ds,
+        filename="report.pdf",
+        content=b"pdf content",
+        content_type="application/pdf",
+    )
+    await _upload_file(
+        ds, filename="photo.jpg", content=b"jpg content", content_type="image/jpeg"
+    )
 
     # Search for "report"
     response = await ds.client.get("/-/files/search.json?q=report")
@@ -582,8 +595,12 @@ async def test_search_multi_source_permission(tmp_path):
     )
 
     # Upload to both sources
-    await _upload_file(ds, source="public-files", filename="public-doc.txt", content=b"public")
-    await _upload_file(ds, source="private-files", filename="private-doc.txt", content=b"private")
+    await _upload_file(
+        ds, source="public-files", filename="public-doc.txt", content=b"public"
+    )
+    await _upload_file(
+        ds, source="private-files", filename="private-doc.txt", content=b"private"
+    )
 
     # Search should only return public files
     response = await ds.client.get("/-/files/search.json")
@@ -632,8 +649,12 @@ async def test_search_multi_source_fts_filtered(tmp_path):
     )
 
     # Both sources have a file named "report"
-    await _upload_file(ds, source="public-files", filename="report.txt", content=b"public report")
-    await _upload_file(ds, source="private-files", filename="report.txt", content=b"private report")
+    await _upload_file(
+        ds, source="public-files", filename="report.txt", content=b"public report"
+    )
+    await _upload_file(
+        ds, source="private-files", filename="report.txt", content=b"private report"
+    )
 
     # FTS search for "report" should only return the public one
     response = await ds.client.get("/-/files/search.json?q=report")
@@ -672,7 +693,9 @@ async def test_search_actor_specific_permission(tmp_path):
         },
     )
 
-    await _upload_file(ds, source="team-files", filename="team-doc.txt", content=b"team data")
+    await _upload_file(
+        ds, source="team-files", filename="team-doc.txt", content=b"team data"
+    )
 
     # Anonymous user (no actor) gets empty results
     response = await ds.client.get("/-/files/search.json")
@@ -729,7 +752,9 @@ async def test_file_info_actor_permission(tmp_path):
         },
     )
 
-    data = await _upload_file(ds, source="restricted", filename="secret.txt", content=b"secret")
+    data = await _upload_file(
+        ds, source="restricted", filename="secret.txt", content=b"secret"
+    )
     file_id = data["file_id"]
 
     # Anonymous: 403
@@ -797,7 +822,9 @@ async def test_search_text_not_in_filename_match(datasette_browse_allowed, uploa
 
     # Update search_text for other.txt (shouldn't match "report" query)
     db = ds.get_internal_database()
-    rows = (await db.execute("SELECT id FROM datasette_files WHERE filename = 'other.txt'")).rows
+    rows = (
+        await db.execute("SELECT id FROM datasette_files WHERE filename = 'other.txt'")
+    ).rows
     other_id = rows[0]["id"]
     await db.execute_write(
         "UPDATE datasette_files SET search_text = ? WHERE id = ?",
@@ -822,7 +849,9 @@ async def test_files_edit_action_registered(datasette_with_files):
 
 
 @pytest.mark.asyncio
-async def test_edit_search_text_denied_without_permission(datasette_browse_allowed, upload_dir):
+async def test_edit_search_text_denied_without_permission(
+    datasette_browse_allowed, upload_dir
+):
     """POST to file info page without files-edit permission returns 403."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="noedit.txt", content=b"content")
@@ -865,7 +894,9 @@ async def test_edit_search_text_with_permission(tmp_path):
         },
     )
 
-    data = await _upload_file(ds, source="editable", filename="doc.txt", content=b"hello")
+    data = await _upload_file(
+        ds, source="editable", filename="doc.txt", content=b"hello"
+    )
     file_id = data["file_id"]
 
     # Editor can update search_text
@@ -880,7 +911,11 @@ async def test_edit_search_text_with_permission(tmp_path):
 
     # Verify the search_text was persisted
     db = ds.get_internal_database()
-    row = (await db.execute("SELECT search_text FROM datasette_files WHERE id = ?", [file_id])).first()
+    row = (
+        await db.execute(
+            "SELECT search_text FROM datasette_files WHERE id = ?", [file_id]
+        )
+    ).first()
     assert row["search_text"] == "quarterly financial report Q4 2025"
 
     # Verify FTS can find the file by search_text
@@ -921,7 +956,9 @@ async def test_edit_form_visible_with_permission(tmp_path):
         },
     )
 
-    data = await _upload_file(ds, source="editable", filename="doc.txt", content=b"hello")
+    data = await _upload_file(
+        ds, source="editable", filename="doc.txt", content=b"hello"
+    )
     file_id = data["file_id"]
 
     # Editor sees the textarea form
@@ -968,7 +1005,9 @@ async def test_edit_search_text_non_editor_denied(tmp_path):
         },
     )
 
-    data = await _upload_file(ds, source="editable", filename="doc.txt", content=b"hello")
+    data = await _upload_file(
+        ds, source="editable", filename="doc.txt", content=b"hello"
+    )
     file_id = data["file_id"]
 
     # Bob can browse but not edit
@@ -982,5 +1021,9 @@ async def test_edit_search_text_non_editor_denied(tmp_path):
 
     # Verify search_text was NOT changed
     db = ds.get_internal_database()
-    row = (await db.execute("SELECT search_text FROM datasette_files WHERE id = ?", [file_id])).first()
+    row = (
+        await db.execute(
+            "SELECT search_text FROM datasette_files WHERE id = ?", [file_id]
+        )
+    ).first()
     assert row["search_text"] == ""

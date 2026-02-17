@@ -177,7 +177,9 @@ def files_permission_resources_sql(datasette, actor, action):
             f"SELECT NULL AS parent, NULL AS child, :dfp_allow_{i} AS allow, :dfp_reason_{i} AS reason"
         )
         params[f"dfp_allow_{i}"] = 1 if allowed else 0
-        params[f"dfp_reason_{i}"] = f"datasette-files config {'allow' if allowed else 'deny'} for {action}"
+        params[f"dfp_reason_{i}"] = (
+            f"datasette-files config {'allow' if allowed else 'deny'} for {action}"
+        )
     elif isinstance(action_config, dict):
         # Per-source permissions: {source_slug: allow_block, ...}
         for source_slug, source_allow_block in action_config.items():
@@ -239,9 +241,7 @@ def startup(datasette):
         await db.execute_write_script(CREATE_SQL)
 
         # Migrate: add search_text column if missing (pre-existing databases)
-        columns = (
-            await db.execute("PRAGMA table_info(datasette_files)")
-        ).rows
+        columns = (await db.execute("PRAGMA table_info(datasette_files)")).rows
         col_names = {row["name"] for row in columns}
         if "search_text" not in col_names:
             await db.execute_write(
@@ -432,7 +432,9 @@ async def file_info(request, datasette):
             actor=request.actor,
         )
         if not can_edit:
-            raise Forbidden("Permission denied: files-edit on source " + row["source_slug"])
+            raise Forbidden(
+                "Permission denied: files-edit on source " + row["source_slug"]
+            )
 
         form = await request.post_vars()
         search_text = form.get("search_text", "")

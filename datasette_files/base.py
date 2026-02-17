@@ -114,8 +114,6 @@ class Storage(ABC):
             f"{self.__class__.__name__} does not support deletion"
         )
 
-    async def thumbnail_url(
-        self, path: str, width: int, height: int
-    ) -> Optional[str]:
+    async def thumbnail_url(self, path: str, width: int, height: int) -> Optional[str]:
         """Return a URL for a thumbnail, or None."""
         return None
