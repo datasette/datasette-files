@@ -16,6 +16,7 @@ requires-python = ">=3.10"
 dependencies = [
     "datasette>=1.0a24",
     "python-ulid",
+    "typing_extensions",
 ]
 
 [dependency-groups]
