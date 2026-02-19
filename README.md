@@ -479,17 +479,6 @@ uv run pytest
 
 Recommendation to run a test server:
 ```bash
-uv run datasette . --internal internal.db --root --reload \
-  --secret 1 -s permissions.debug-storages.id root
+./dev-server.sh
 ```
-And if you're using `datasette-secrets` to manage any secrets for those plugins:
-```bash
-uv run datasette secrets generate-encryption-key > key.txt
-```
-Then add this to the `datasette` line:
-```bash
-uv run datasette . --internal internal.db --root --reload \
-  --secret 1 -s permissions.debug-storages.id root \
-  -s plugins.datasette-secrets.encryption-key "$(cat key.txt)" \
-  -s permissions.manage-secrets.id root
-```
+
