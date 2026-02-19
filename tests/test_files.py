@@ -489,6 +489,32 @@ async def test_search_json_with_query(datasette_browse_allowed, upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_search_json_prefix_match(datasette_browse_allowed, upload_dir):
+    """Search with a partial prefix finds matching files."""
+    ds = datasette_browse_allowed
+    await _upload_file(
+        ds, filename="projects5.png", content=b"png data", content_type="image/png"
+    )
+    await _upload_file(
+        ds, filename="report.txt", content=b"txt data", content_type="text/plain"
+    )
+
+    # "proj" should match "projects5.png" via prefix
+    response = await ds.client.get("/-/files/search.json?q=proj")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 1
+    assert data["files"][0]["filename"] == "projects5.png"
+
+    # "pro 5" (multiple terms) should also match "projects5.png"
+    response = await ds.client.get("/-/files/search.json?q=pro+5")
+    assert response.status_code == 200
+    data = response.json()
+    filenames = {f["filename"] for f in data["files"]}
+    assert "projects5.png" in filenames
+
+
+@pytest.mark.asyncio
 async def test_search_json_no_query_lists_recent(datasette_browse_allowed, upload_dir):
     """Search with no query lists recent files."""
     ds = datasette_browse_allowed
@@ -1027,3 +1053,198 @@ async def test_edit_search_text_non_editor_denied(tmp_path):
         )
     ).first()
     assert row["search_text"] == ""
+
+
+# --- render_cell with data-column ---
+
+
+@pytest.mark.asyncio
+async def test_render_cell_includes_data_column(datasette_browse_allowed, upload_dir):
+    """render_cell output includes data-column attribute when table context is present."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
+    file_id = data["file_id"]
+
+    from datasette_files import render_cell
+
+    result = render_cell(
+        value=file_id,
+        column="document",
+        table="projects",
+        database="demo",
+        datasette=ds,
+        request=None,
+    )
+    assert result is not None
+    assert f'data-column="document"' in result
+    assert f'file-id="{file_id}"' in result
+
+
+@pytest.mark.asyncio
+async def test_render_cell_no_data_column_without_table(
+    datasette_browse_allowed, upload_dir
+):
+    """render_cell output omits data-column when table is None (e.g. SQL views)."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
+    file_id = data["file_id"]
+
+    from datasette_files import render_cell
+
+    result = render_cell(
+        value=file_id,
+        column="document",
+        table=None,
+        database="demo",
+        datasette=ds,
+        request=None,
+    )
+    assert result is not None
+    assert "data-column" not in result
+
+
+@pytest.mark.asyncio
+async def test_render_cell_no_match_for_non_file_id(datasette_browse_allowed):
+    """render_cell returns None for values that don't match the file ID pattern."""
+    ds = datasette_browse_allowed
+
+    from datasette_files import render_cell
+
+    result = render_cell(
+        value="not-a-file-id",
+        column="name",
+        table="projects",
+        database="demo",
+        datasette=ds,
+        request=None,
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_dir):
+    """render_cell escapes column names to prevent XSS."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
+    file_id = data["file_id"]
+
+    from datasette_files import render_cell
+
+    result = render_cell(
+        value=file_id,
+        column='"><script>alert(1)</script>',
+        table="projects",
+        database="demo",
+        datasette=ds,
+        request=None,
+    )
+    assert result is not None
+    assert "<script>" not in result
+    assert "&lt;script&gt;" in result or "&#" in result
+
+
+# --- extra_body_script ---
+
+
+@pytest.mark.asyncio
+async def test_extra_body_script_on_table_page(tmp_path):
+    """extra_body_script emits window.__datasette_files on table pages."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
+    )
+
+    # Visit the table page as anonymous user
+    response = await ds.client.get("/test/projects")
+    assert response.status_code == 200
+    assert "window.__datasette_files" in response.text
+    # Anonymous user cannot update rows by default
+    assert '"canUpdate": false' in response.text
+    assert '"database": "test"' in response.text
+    assert '"table": "projects"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_extra_body_script_with_update_permission(tmp_path):
+    """extra_body_script sets canUpdate true when actor has update-row permission."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "update-row": True,
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT)"
+    )
+
+    response = await ds.client.get("/test/projects")
+    assert response.status_code == 200
+    assert '"canUpdate": true' in response.text
+
+
+@pytest.mark.asyncio
+async def test_extra_body_script_not_on_non_table_pages(tmp_path):
+    """extra_body_script does not emit on non-table pages like database index."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)")
+
+    # Database page
+    response = await ds.client.get("/test")
+    assert response.status_code == 200
+    assert "window.__datasette_files" not in response.text

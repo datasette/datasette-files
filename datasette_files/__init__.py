@@ -333,13 +333,30 @@ def startup(datasette):
 
 
 async def upload_file(request, datasette):
-    """POST /-/files/upload/{source_slug} - upload a file."""
+    """GET/POST /-/files/upload/{source_slug} - upload form and handler."""
     source_slug = request.url_vars["source_slug"]
     if source_slug not in _sources:
         raise NotFound(f"Source not found: {source_slug}")
 
     storage = _sources[source_slug]
     meta = _source_meta[source_slug]
+
+    if request.method == "GET":
+        # Check upload permission for the form page
+        can_upload = await datasette.allowed(
+            action="files-upload",
+            resource=FileSourceResource(source_slug),
+            actor=request.actor,
+        )
+        if not can_upload:
+            raise Forbidden("Permission denied: files-upload on source " + source_slug)
+        return Response.html(
+            await datasette.render_template(
+                "files_upload.html",
+                {"source_slug": source_slug},
+                request=request,
+            )
+        )
 
     # Parse the multipart upload
     form = await request.form(files=True)
@@ -381,6 +398,10 @@ async def upload_file(request, datasette):
     )
 
     await form.aclose()
+
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        return Response.redirect(f"/-/files/{file_id}")
 
     return Response.json(
         {
@@ -599,6 +620,9 @@ async def search_files(request, datasette):
     if not allowed_slugs:
         files = []
     elif q:
+        # Build prefix query: append * to each term for prefix matching, OR between terms
+        terms = ['"{}"*'.format(term.replace('"', '""')) for term in q.split() if term]
+        fts_q = " OR ".join(terms) if len(terms) > 1 else terms[0] if terms else q
         # FTS search filtered to allowed sources
         placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
         search_sql = """
@@ -616,7 +640,7 @@ async def search_files(request, datasette):
             placeholders=placeholders,
             source_where="AND s.slug = :source_filter" if source_filter else "",
         )
-        params = {"q": q}
+        params = {"q": fts_q}
         for i, slug in enumerate(allowed_slugs):
             params[f"_slug_{i}"] = slug
         if source_filter:
@@ -691,10 +715,13 @@ def register_routes():
 def render_cell(value, column, table, database, datasette, request):
     if not isinstance(value, str) or not _FILE_ID_RE.match(value):
         return None
+    col_attr = (
+        ' data-column="{}"'.format(Markup.escape(column)) if table is not None else ""
+    )
     return Markup(
-        '<datasette-file file-id="{v}">'
+        '<datasette-file file-id="{v}"{col}>'
         '<a href="/-/files/{v}">{v}</a>'
-        "</datasette-file>".format(v=value)
+        "</datasette-file>".format(v=value, col=col_attr)
     )
 
 
@@ -708,6 +735,30 @@ def extra_js_urls(template, database, table, columns, view_name, request, datase
             }
         ]
     return []
+
+
+@hookimpl
+async def extra_body_script(
+    template, database, table, columns, view_name, request, datasette
+):
+    if view_name not in ("table", "row") or table is None:
+        return ""
+    from datasette.resources import TableResource
+
+    can_update = await datasette.allowed(
+        action="update-row",
+        resource=TableResource(database=database, table=table),
+        actor=request.actor,
+    )
+    return "window.__datasette_files = {};".format(
+        json.dumps(
+            {
+                "canUpdate": can_update,
+                "database": database,
+                "table": table,
+            }
+        )
+    )
 
 
 _FILE_INFO_PATH_RE = re.compile(r"^/-/files/df-[a-z0-9]{26}$")
