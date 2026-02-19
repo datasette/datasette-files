@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}Upload to {{ source_slug }}{% endblock %}
+
+{% block content %}
+<h1>Upload to {{ source_slug }}</h1>
+
+<form method="post" enctype="multipart/form-data" action="/-/files/upload/{{ source_slug }}">
+    <p><input type="file" name="file" required></p>
+    <p><button type="submit">Upload</button></p>
+</form>
+{% endblock %}
