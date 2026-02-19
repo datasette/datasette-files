@@ -1,0 +1,19 @@
+plugins:
+  datasette-files:
+    sources:
+      public-docs:
+        storage: filesystem
+        config:
+          root: search-demo-uploads/public
+      team-docs:
+        storage: filesystem
+        config:
+          root: search-demo-uploads/team
+
+permissions:
+  files-browse:
+    public-docs:
+      allow: true
+    team-docs:
+      allow:
+        id: alice

@@ -4,5 +4,5 @@ hookspec = HookspecMarker("datasette")
 
 
 @hookspec
-def register_files_storages(datasette):
-    "A list of Storage subclass instances for datasette-files"
+def register_files_storage_types(datasette):
+    "Return a list of Storage subclasses"
