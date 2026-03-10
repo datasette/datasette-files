@@ -478,10 +478,30 @@ async def file_info(request, datasette):
         actor=request.actor,
     )
 
+    file_dict = dict(row)
+
+    # Collect file actions from plugins
+    async def get_file_actions():
+        links = []
+        for hook in pm.hook.file_actions(
+            datasette=datasette,
+            actor=request.actor,
+            file=file_dict,
+        ):
+            extra_links = await await_me_maybe(hook)
+            if extra_links:
+                links.extend(extra_links)
+        return links
+
     return Response.html(
         await datasette.render_template(
             "file_info.html",
-            {"file": dict(row), "can_edit": can_edit, "saved": saved},
+            {
+                "file": file_dict,
+                "can_edit": can_edit,
+                "saved": saved,
+                "file_actions": get_file_actions,
+            },
             request=request,
         )
     )

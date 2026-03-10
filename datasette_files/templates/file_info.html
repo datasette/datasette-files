@@ -3,7 +3,27 @@
 {% block title %}{{ file.filename }}{% endblock %}
 
 {% block content %}
-<h1>{{ file.filename }}</h1>
+<h1>{{ file.filename }}
+{% set action_links = file_actions() %}
+{% if action_links %}
+<details class="actions-menu-links details-menu" style="display: inline-block; position: relative; font-size: 0.6em; vertical-align: middle;">
+    <summary style="cursor: pointer; list-style: none; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px;">
+        File actions
+    </summary>
+    <div style="position: absolute; right: 0; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); min-width: 200px; z-index: 100;">
+        <ul style="list-style: none; margin: 0; padding: 4px 0;">
+            {% for link in action_links %}
+            <li><a href="{{ link.href }}" style="display: block; padding: 6px 12px; text-decoration: none; color: #333;">{{ link.label }}
+            {% if link.description %}
+                <p style="margin: 2px 0 0 0; font-size: 0.85em; color: #666;">{{ link.description }}</p>
+            {% endif %}</a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</details>
+{% endif %}
+</h1>
 
 {% if saved %}
 <p style="color: green; font-weight: bold;">Search text saved.</p>
