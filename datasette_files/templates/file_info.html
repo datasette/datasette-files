@@ -3,10 +3,11 @@
 {% block title %}{{ file.filename }}{% endblock %}
 
 {% block content %}
-<h1>{{ file.filename }}
+<h1>{{ file.filename }}</h1>
+
 {% set action_links = file_actions() %}
 {% if action_links %}
-<div class="page-action-menu" style="display: inline-block; vertical-align: middle; font-size: 0.6em;">
+<div class="page-action-menu">
 <details class="actions-menu-links details-menu">
     <summary>
         <div class="icon-text">
@@ -33,7 +34,6 @@
 </details>
 </div>
 {% endif %}
-</h1>
 
 {% if saved %}
 <p style="color: green; font-weight: bold;">Search text saved.</p>
