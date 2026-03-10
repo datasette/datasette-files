@@ -480,6 +480,16 @@ async def file_info(request, datasette):
 
     file_dict = dict(row)
 
+    # Read preview bytes for file action suggestions
+    source_slug = row["source_slug"]
+    preview_bytes = b""
+    if source_slug in _sources:
+        try:
+            content = await _sources[source_slug].read_file(row["path"])
+            preview_bytes = content[:2048]
+        except Exception:
+            pass
+
     # Collect file actions from plugins
     async def get_file_actions():
         links = []
@@ -487,6 +497,7 @@ async def file_info(request, datasette):
             datasette=datasette,
             actor=request.actor,
             file=file_dict,
+            preview_bytes=preview_bytes,
         ):
             extra_links = await await_me_maybe(hook)
             if extra_links:

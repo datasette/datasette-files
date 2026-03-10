@@ -9,5 +9,5 @@ def register_files_storage_types(datasette):
 
 
 @hookspec
-def file_actions(datasette, actor, file):
+def file_actions(datasette, actor, file, preview_bytes):
     "Return a list of {'href': ..., 'label': ..., 'description': ...} dicts for the file actions menu"
