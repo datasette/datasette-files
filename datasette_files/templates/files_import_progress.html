@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Importing {{ file.filename }}{% endblock %}
+
+{% block content %}
+<h1>Importing {{ file.filename }}</h1>
+
+<p>Importing into <strong>{{ job.table_name }}</strong> in database <strong>{{ job.database_name }}</strong>.</p>
+
+<import-progress
+    api-url="/-/files/import/{{ file.id }}/{{ job.id }}.json"
+    table-url="/{{ job.database_name }}/{{ job.table_name }}"
+    poll-interval="1000"
+></import-progress>
+
+<script>
+class ImportProgress extends HTMLElement {
+  connectedCallback() {
+    this.pollInterval = null;
+    this.innerHTML = `
+      <div class="import-progress-container" style="margin: 1rem 0;">
+        <div class="progress-wrapper" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             style="width: 100%; height: 24px; background: #f5f5f5; border-radius: 12px; overflow: hidden; position: relative;">
+          <div class="progress-bar" style="height: 100%; width: 0%; background: #4CAF50; transition: width 0.3s ease; border-radius: 12px;"></div>
+        </div>
+        <div class="progress-stats" style="display: flex; justify-content: space-between; margin-top: 0.5rem; color: #666;" aria-live="polite">
+          <span class="status-text">Starting import...</span>
+          <span class="row-count"></span>
+        </div>
+      </div>
+    `;
+    this.startPolling();
+  }
+
+  disconnectedCallback() {
+    this.stopPolling();
+  }
+
+  startPolling() {
+    const apiUrl = this.getAttribute('api-url');
+    const tableUrl = this.getAttribute('table-url');
+    const pollMs = parseInt(this.getAttribute('poll-interval')) || 1000;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(apiUrl);
+        if (!response.ok) { this.stopPolling(); return; }
+        const data = await response.json();
+
+        const bar = this.querySelector('.progress-bar');
+        const statusText = this.querySelector('.status-text');
+        const rowCount = this.querySelector('.row-count');
+        const wrapper = this.querySelector('.progress-wrapper');
+
+        let pct = 0;
+        if (data.total_size > 0) {
+          pct = Math.min(100, Math.round((data.bytes_read / data.total_size) * 100));
+        }
+        bar.style.width = pct + '%';
+        wrapper.setAttribute('aria-valuenow', pct);
+
+        if (data.status === 'finished') {
+          bar.style.background = '#4CAF50';
+          statusText.innerHTML = 'Import complete! <a href="' + data.table_url + '">View table &rarr;</a>';
+          rowCount.textContent = data.row_count + ' rows imported';
+          this.stopPolling();
+        } else if (data.status === 'error') {
+          bar.style.background = '#f44336';
+          statusText.textContent = 'Error: ' + (data.error || 'Unknown error');
+          this.stopPolling();
+        } else {
+          statusText.textContent = 'Importing... ' + pct + '%';
+          rowCount.textContent = data.row_count + ' rows so far';
+        }
+      } catch (e) {
+        console.error('Poll error:', e);
+        this.stopPolling();
+      }
+    };
+
+    this.pollInterval = setInterval(poll, pollMs);
+    poll();
+  }
+
+  stopPolling() {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+  }
+}
+
+if (!customElements.get('import-progress')) {
+  customElements.define('import-progress', ImportProgress);
+}
+</script>
+{% endblock %}

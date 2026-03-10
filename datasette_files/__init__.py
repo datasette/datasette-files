@@ -49,6 +49,22 @@ CREATE TABLE IF NOT EXISTS datasette_files (
     search_text TEXT DEFAULT '',
     UNIQUE(source_id, path)
 );
+
+CREATE TABLE IF NOT EXISTS _datasette_files_imports (
+    id INTEGER PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    import_type TEXT NOT NULL DEFAULT 'csv',
+    database_name TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    row_count INTEGER NOT NULL DEFAULT 0,
+    total_size INTEGER NOT NULL DEFAULT 0,
+    bytes_read INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
+    actor_id TEXT
+);
 """
 
 FTS_SQL = """
@@ -737,6 +753,9 @@ def register_routes():
         (r"^/-/files/batch\.json$", batch_json),
         (r"^/-/files/sources\.json$", sources_json),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),
+        (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)\.json$", import_progress_view),
+        (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)$", import_progress_view),
+        (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)$", import_file_view),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)\.json$", file_json),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/download$", file_download),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)$", file_info),
@@ -793,6 +812,303 @@ async def extra_body_script(
     )
 
 
+import asyncio
+import csv
+import io
+import sqlite_utils
+
+
+def _parse_csv_preview(content_bytes, max_rows=10):
+    """Parse CSV content and return (columns, rows, dialect).
+
+    Uses csv.Sniffer to detect delimiter. First row is used as headers.
+    """
+    text = content_bytes.decode("utf-8", errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(text[:8192])
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.reader(io.StringIO(text), dialect)
+    columns = next(reader, None)
+    if columns is None:
+        return [], [], dialect
+    rows = []
+    for row in reader:
+        rows.append(row)
+        if len(rows) >= max_rows:
+            break
+    return columns, rows, dialect
+
+
+async def _run_csv_import(datasette, import_id, storage, file_path, target_db, table_name):
+    """Run CSV import as a background task, updating progress in _datasette_files_imports."""
+    from sqlite_utils.utils import TypeTracker as _TypeTracker
+
+    internal_db = datasette.get_internal_database()
+
+    try:
+        # Mark as running
+        await internal_db.execute_write(
+            "UPDATE _datasette_files_imports SET status = 'running' WHERE id = :id",
+            {"id": import_id},
+        )
+
+        # Read file content
+        content = await storage.read_file(file_path)
+        total_size = len(content)
+        text = content.decode("utf-8", errors="replace")
+
+        # Sniff delimiter
+        try:
+            dialect = csv.Sniffer().sniff(text[:8192])
+        except csv.Error:
+            dialect = csv.excel
+
+        reader = csv.reader(io.StringIO(text), dialect)
+        columns = next(reader, None)
+        if columns is None:
+            await internal_db.execute_write(
+                "UPDATE _datasette_files_imports SET status = 'error', error = 'No columns found', finished_at = datetime('now') WHERE id = :id",
+                {"id": import_id},
+            )
+            return
+
+        # Collect all rows through TypeTracker
+        tracker = _TypeTracker()
+        batch = []
+        batch_size = 500
+        row_count = 0
+        bytes_read = 0
+
+        for row_values in reader:
+            row_dict = dict(zip(columns, row_values))
+            batch.append(row_dict)
+            # Estimate bytes read from row content
+            bytes_read += sum(len(v) for v in row_values) + len(row_values)
+            row_count += 1
+
+            if len(batch) >= batch_size:
+                wrapped = list(tracker.wrap(batch))
+                await target_db.execute_write_fn(
+                    lambda conn, rows=wrapped: sqlite_utils.Database(conn)[table_name].insert_all(rows)
+                )
+                await internal_db.execute_write(
+                    "UPDATE _datasette_files_imports SET row_count = :row_count, bytes_read = :bytes_read WHERE id = :id",
+                    {"id": import_id, "row_count": row_count, "bytes_read": min(bytes_read, total_size)},
+                )
+                batch = []
+
+        # Insert remaining rows
+        if batch:
+            wrapped = list(tracker.wrap(batch))
+            await target_db.execute_write_fn(
+                lambda conn, rows=wrapped: sqlite_utils.Database(conn)[table_name].insert_all(rows)
+            )
+
+        # Apply detected types via transform
+        detected_types = tracker.types
+        if detected_types:
+            await target_db.execute_write_fn(
+                lambda conn: sqlite_utils.Database(conn)[table_name].transform(types=detected_types)
+            )
+
+        # Mark as finished
+        await internal_db.execute_write(
+            """UPDATE _datasette_files_imports
+               SET status = 'finished', row_count = :row_count,
+                   bytes_read = :total_size, finished_at = datetime('now')
+               WHERE id = :id""",
+            {"id": import_id, "row_count": row_count, "total_size": total_size},
+        )
+
+    except Exception as e:
+        await internal_db.execute_write(
+            """UPDATE _datasette_files_imports
+               SET status = 'error', error = :error, finished_at = datetime('now')
+               WHERE id = :id""",
+            {"id": import_id, "error": str(e)},
+        )
+
+
+async def import_file_view(request, datasette):
+    """GET/POST /-/files/import/{file_id} - import a file as a database table."""
+    file_id = request.url_vars["file_id"]
+    row = await _get_file_record(datasette, file_id)
+    if row is None:
+        raise NotFound(f"File not found: {file_id}")
+
+    await _check_browse_permission(datasette, request, row["source_slug"])
+
+    source_slug = row["source_slug"]
+    if source_slug not in _sources:
+        raise NotFound(f"Source not found: {source_slug}")
+
+    storage = _sources[source_slug]
+    file_dict = dict(row)
+
+    if request.method == "GET":
+        # Read file content for preview
+        content = await storage.read_file(row["path"])
+        # Use up to 64KB for preview/sniffing
+        preview_bytes = content[: 64 * 1024]
+        columns, preview_rows, dialect = _parse_csv_preview(preview_bytes)
+
+        # Check if there are more rows than shown
+        total_lines = content.count(b"\n")
+        has_more_rows = total_lines > len(preview_rows) + 1
+
+        # Default table name from filename without extension
+        filename = row["filename"]
+        default_table_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+        # Get writable databases
+        databases = [
+            db_name
+            for db_name in datasette.databases
+            if db_name != "_internal" and not datasette.get_database(db_name).is_memory
+        ]
+        if not databases:
+            # Fallback to memory databases if no file-based DBs
+            databases = [
+                db_name
+                for db_name in datasette.databases
+                if db_name != "_internal"
+            ]
+
+        return Response.html(
+            await datasette.render_template(
+                "files_import.html",
+                {
+                    "file": file_dict,
+                    "columns": columns,
+                    "preview_rows": preview_rows,
+                    "has_more_rows": has_more_rows,
+                    "default_table_name": default_table_name,
+                    "databases": databases,
+                },
+                request=request,
+            )
+        )
+
+    # POST: start the import
+    form = await request.post_vars()
+    table_name = form.get("table_name", "").strip()
+    database_name = form.get("database_name", "").strip()
+
+    if not table_name:
+        return Response.json({"error": "table_name is required"}, status=400)
+    if not database_name:
+        return Response.json({"error": "database_name is required"}, status=400)
+
+    # Verify target database exists
+    try:
+        target_db = datasette.get_database(database_name)
+    except KeyError:
+        return Response.json({"error": f"Database not found: {database_name}"}, status=400)
+
+    # Create import job record
+    internal_db = datasette.get_internal_database()
+    file_size = row["size"] or 0
+    actor_id = (request.actor or {}).get("id")
+
+    result = await internal_db.execute_write(
+        """
+        INSERT INTO _datasette_files_imports
+            (file_id, import_type, database_name, table_name, status, total_size, actor_id)
+        VALUES
+            (:file_id, 'csv', :database_name, :table_name, 'pending', :total_size, :actor_id)
+        """,
+        {
+            "file_id": file_id,
+            "database_name": database_name,
+            "table_name": table_name,
+            "total_size": file_size,
+            "actor_id": actor_id,
+        },
+    )
+    import_id = result.lastrowid
+
+    # Launch async import task
+    asyncio.create_task(
+        _run_csv_import(datasette, import_id, storage, row["path"], target_db, table_name)
+    )
+
+    return Response.redirect(f"/-/files/import/{file_id}/{import_id}")
+
+
+async def import_progress_view(request, datasette):
+    """GET /-/files/import/{file_id}/{import_id}[.json] - import progress page or JSON."""
+    file_id = request.url_vars["file_id"]
+    import_id = request.url_vars["import_id"]
+
+    row = await _get_file_record(datasette, file_id)
+    if row is None:
+        raise NotFound(f"File not found: {file_id}")
+
+    await _check_browse_permission(datasette, request, row["source_slug"])
+
+    internal_db = datasette.get_internal_database()
+    job_row = (
+        await internal_db.execute(
+            "SELECT * FROM _datasette_files_imports WHERE id = :id AND file_id = :file_id",
+            {"id": import_id, "file_id": file_id},
+        )
+    ).first()
+
+    if job_row is None:
+        raise NotFound(f"Import job not found: {import_id}")
+
+    job = dict(job_row)
+
+    is_json = request.path.endswith(".json")
+    if is_json:
+        table_url = f"/{job['database_name']}/{job['table_name']}"
+        return Response.json(
+            {
+                "id": job["id"],
+                "file_id": job["file_id"],
+                "import_type": job["import_type"],
+                "database_name": job["database_name"],
+                "table_name": job["table_name"],
+                "status": job["status"],
+                "row_count": job["row_count"],
+                "total_size": job["total_size"],
+                "bytes_read": job["bytes_read"],
+                "error": job["error"],
+                "started_at": job["started_at"],
+                "finished_at": job["finished_at"],
+                "table_url": table_url,
+            }
+        )
+
+    return Response.html(
+        await datasette.render_template(
+            "files_import_progress.html",
+            {
+                "file": dict(row),
+                "job": job,
+            },
+            request=request,
+        )
+    )
+
+
+@hookimpl
+def file_actions(datasette, actor, file, preview_bytes):
+    """Suggest CSV import for files that look like CSV."""
+    filename = file.get("filename", "")
+    content_type = file.get("content_type", "")
+    if content_type == "text/csv" or filename.endswith(".csv"):
+        return [
+            {
+                "href": f"/-/files/import/{file['id']}",
+                "label": "Import as table",
+                "description": "Import this CSV file as a database table",
+            },
+        ]
+    return []
+
+
 _FILE_INFO_PATH_RE = re.compile(r"^/-/files/df-[a-z0-9]{26}$")
 
 
@@ -801,7 +1117,7 @@ def skip_csrf(datasette, scope):
     if scope["type"] != "http":
         return False
     path = scope["path"]
-    if path.startswith("/-/files/upload/"):
+    if path.startswith("/-/files/upload/") or path.startswith("/-/files/import/"):
         return True
     # POST to file info page (search_text edit form)
     if _FILE_INFO_PATH_RE.match(path):

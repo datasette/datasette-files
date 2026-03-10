@@ -1446,3 +1446,326 @@ async def test_file_actions_suggestion_based_on_preview_bytes(upload_dir):
         assert "Import as table" not in response.text
     finally:
         pm.unregister(name="undo_CsvSuggestionPlugin")
+
+
+# --- CSV Import tests ---
+
+
+@pytest.mark.asyncio
+async def test_imports_table_created_at_startup(upload_dir):
+    """The _datasette_files_imports table is created in internal DB at startup."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    await ds.invoke_startup()
+    db = ds.get_internal_database()
+    tables = (
+        await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='_datasette_files_imports'"
+        )
+    ).rows
+    assert len(tables) == 1
+
+    # Verify expected columns
+    columns = (
+        await db.execute("PRAGMA table_info(_datasette_files_imports)")
+    ).rows
+    col_names = {row["name"] for row in columns}
+    assert "id" in col_names
+    assert "file_id" in col_names
+    assert "import_type" in col_names
+    assert "database_name" in col_names
+    assert "table_name" in col_names
+    assert "status" in col_names
+    assert "row_count" in col_names
+    assert "total_size" in col_names
+    assert "bytes_read" in col_names
+    assert "error" in col_names
+    assert "started_at" in col_names
+    assert "finished_at" in col_names
+    assert "actor_id" in col_names
+
+
+@pytest.mark.asyncio
+async def test_csv_file_actions_suggests_import(upload_dir):
+    """The built-in file_actions hook suggests importing CSV files as tables."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(
+        ds,
+        filename="data.csv",
+        content=b"name,age\nAlice,30\nBob,25\n",
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}")
+    assert response.status_code == 200
+    assert "Import as table" in response.text
+    assert f"/-/files/import/{file_id}" in response.text
+
+
+@pytest.mark.asyncio
+async def test_csv_file_actions_not_for_non_csv(upload_dir):
+    """The built-in file_actions hook does NOT suggest import for non-CSV files."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(
+        ds,
+        filename="photo.png",
+        content=b"\x89PNG\r\n\x1a\n",
+        content_type="image/png",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}")
+    assert response.status_code == 200
+    assert "Import as table" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_import_preview_get(upload_dir):
+    """GET /-/files/import/{file_id} shows a preview of the CSV data and a form."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(
+        ds,
+        filename="data.csv",
+        content=b"name,age,city\nAlice,30,NYC\nBob,25,LA\nCharlie,35,SF\n",
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.get(f"/-/files/import/{file_id}")
+    assert response.status_code == 200
+    # Should show the filename
+    assert "data.csv" in response.text
+    # Should show column headers from first row
+    assert "name" in response.text
+    assert "age" in response.text
+    assert "city" in response.text
+    # Should show preview data
+    assert "Alice" in response.text
+    assert "Bob" in response.text
+    # Should have a table name input
+    assert "table_name" in response.text
+    # Should have a submit button
+    assert "Import" in response.text
+
+
+@pytest.mark.asyncio
+async def test_import_preview_get_404_for_missing_file(upload_dir):
+    """GET /-/files/import/{bad_id} returns 404."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True},
+    )
+    response = await ds.client.get("/-/files/import/df-00000000000000000000000000")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_import_post_creates_job_and_imports(tmp_path):
+    """POST /-/files/import/{file_id} creates import job, imports CSV, and redirects to progress page."""
+    import asyncio
+
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "data.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-uploads": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-upload": True,
+                "create-table": True,
+                "insert-row": True,
+            },
+        },
+    )
+
+    csv_content = b"name,age,city\nAlice,30,NYC\nBob,25,LA\nCharlie,35,SF\n"
+    result = await _upload_file(
+        ds,
+        filename="people.csv",
+        content=csv_content,
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    # POST to start the import
+    response = await ds.client.post(
+        f"/-/files/import/{file_id}",
+        data={"table_name": "people", "database_name": "data"},
+        follow_redirects=False,
+    )
+    # Should redirect to progress page
+    assert response.status_code in (301, 302, 303)
+    location = response.headers["location"]
+    assert "/-/files/import/" in location
+
+    # Give the async task time to complete
+    await asyncio.sleep(0.5)
+
+    # Verify import job was created in internal DB
+    internal_db = ds.get_internal_database()
+    jobs = (
+        await internal_db.execute("SELECT * FROM _datasette_files_imports")
+    ).rows
+    assert len(jobs) == 1
+    job = dict(jobs[0])
+    assert job["file_id"] == file_id
+    assert job["import_type"] == "csv"
+    assert job["database_name"] == "data"
+    assert job["table_name"] == "people"
+    assert job["status"] == "finished"
+    assert job["row_count"] == 3
+
+    # Verify the table was actually created with the right data
+    data_db = ds.get_database("data")
+    rows = (await data_db.execute("SELECT * FROM people ORDER BY name")).rows
+    assert len(rows) == 3
+    assert dict(rows[0])["name"] == "Alice"
+    assert dict(rows[1])["name"] == "Bob"
+    assert dict(rows[2])["name"] == "Charlie"
+
+    # Verify TypeTracker ran - age should be integer, not text
+    col_info = (await data_db.execute("PRAGMA table_info(people)")).rows
+    col_types = {row["name"]: row["type"] for row in col_info}
+    assert col_types["age"].lower() == "integer"
+    assert col_types["name"].lower() == "text"
+
+
+@pytest.mark.asyncio
+async def test_import_progress_json(tmp_path):
+    """GET /-/files/import/{file_id}/{import_id}.json returns progress data."""
+    import asyncio
+
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "data.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-uploads": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-upload": True,
+                "create-table": True,
+                "insert-row": True,
+            },
+        },
+    )
+
+    csv_content = b"name,age\nAlice,30\nBob,25\n"
+    result = await _upload_file(
+        ds,
+        filename="progress_test.csv",
+        content=csv_content,
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    # Start import
+    response = await ds.client.post(
+        f"/-/files/import/{file_id}",
+        data={"table_name": "progress_test", "database_name": "data"},
+        follow_redirects=False,
+    )
+    location = response.headers["location"]
+    # Extract import_id from redirect URL
+    import_id = location.split("/")[-1]
+
+    await asyncio.sleep(0.5)
+
+    # Fetch progress JSON
+    response = await ds.client.get(f"{location}.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "finished"
+    assert data["row_count"] == 2
+    assert data["total_size"] == len(csv_content)
+    assert data["bytes_read"] == len(csv_content)
+    assert "table_url" in data
+
+
+@pytest.mark.asyncio
+async def test_import_progress_page(tmp_path):
+    """GET /-/files/import/{file_id}/{import_id} returns an HTML progress page with progress bar."""
+    import asyncio
+
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "data.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-uploads": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-upload": True,
+                "create-table": True,
+                "insert-row": True,
+            },
+        },
+    )
+
+    csv_content = b"name,age\nAlice,30\nBob,25\n"
+    result = await _upload_file(
+        ds,
+        filename="progress_page.csv",
+        content=csv_content,
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.post(
+        f"/-/files/import/{file_id}",
+        data={"table_name": "progress_page", "database_name": "data"},
+        follow_redirects=False,
+    )
+    location = response.headers["location"]
+
+    await asyncio.sleep(0.5)
+
+    # Fetch progress HTML page
+    response = await ds.client.get(location)
+    assert response.status_code == 200
+    assert "import-progress" in response.text or "progress" in response.text.lower()
+    # Should contain the table name
+    assert "progress_page" in response.text
