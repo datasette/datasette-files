@@ -172,6 +172,65 @@ This works for any text column — store a `df-...` ID returned from the upload 
 | `GET` | `/-/files/{file_id}` | File info page (HTML) |
 | `GET` | `/-/files/{file_id}.json` | File metadata (JSON) |
 | `GET` | `/-/files/{file_id}/download` | Download file content |
+| `GET` | `/-/files/import/{file_id}` | CSV import preview page |
+| `POST` | `/-/files/import/{file_id}` | Start CSV import job |
+| `GET` | `/-/files/import/{file_id}/progress` | Import progress (HTML or JSON) |
+
+## Plugin hook: `file_actions`
+
+The `file_actions` hook lets plugins add custom action links to the file info page. These appear in a "File actions" dropdown menu below the filename heading.
+
+### Hook signature
+
+```python
+def file_actions(datasette, actor, file, preview_bytes):
+    ...
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `datasette` | The Datasette instance |
+| `actor` | The current actor dict (or `None`) |
+| `file` | A dict with the file's metadata: `id`, `filename`, `content_type`, `size`, `content_hash`, `source_id`, etc. |
+| `preview_bytes` | The first 2048 bytes of the file content (useful for sniffing file type) |
+
+Return a list of dicts, each with:
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `href` | Yes | URL the action links to |
+| `label` | Yes | Display text for the action |
+| `description` | No | Short description shown below the label |
+
+Return an empty list (or `None`) if your plugin has no actions for this file.
+
+The hook can be a regular function or an `async` function.
+
+### Example: add a "Convert to PDF" action for text files
+
+```python
+from datasette import hookimpl
+
+@hookimpl
+def file_actions(datasette, actor, file, preview_bytes):
+    if file["content_type"] and file["content_type"].startswith("text/"):
+        return [
+            {
+                "href": f"/-/convert-pdf/{file['id']}",
+                "label": "Convert to PDF",
+                "description": "Convert this text file to PDF format",
+            }
+        ]
+    return []
+```
+
+### Built-in CSV import action
+
+datasette-files ships with a built-in `file_actions` implementation that adds an "Import as table" action for CSV files. When a file has a `text/csv` content type or a `.csv` filename extension, the dropdown will include a link to `/-/files/import/{file_id}` which provides:
+
+1. A preview page showing detected columns and sample rows
+2. A POST endpoint that imports the CSV into a new database table with automatic type detection (integers, floats, and text)
+3. A progress page showing import status
 
 ## Plugin hook: `register_files_storage_types`
 
