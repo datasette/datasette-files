@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Import {{ file.filename }}{% endblock %}
+
+{% block content %}
+<h1>Import {{ file.filename }}</h1>
+
+<h2>Preview</h2>
+
+<table>
+    <thead>
+        <tr>
+            {% for col in columns %}
+            <th>{{ col }}</th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in preview_rows %}
+        <tr>
+            {% for val in row %}
+            <td>{{ val }}</td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if has_more_rows %}
+<p><em>Showing first {{ preview_rows|length }} of {{ file.size }} bytes...</em></p>
+{% endif %}
+
+<h2>Import settings</h2>
+
+<form method="post" action="/-/files/import/{{ file.id }}">
+    <p>
+        <label for="table_name">Table name:</label>
+        <input type="text" name="table_name" id="table_name" value="{{ default_table_name }}" required>
+    </p>
+    {% if databases|length > 1 %}
+    <p>
+        <label for="database_name">Database:</label>
+        <select name="database_name" id="database_name">
+            {% for db_name in databases %}
+            <option value="{{ db_name }}">{{ db_name }}</option>
+            {% endfor %}
+        </select>
+    </p>
+    {% else %}
+    <input type="hidden" name="database_name" value="{{ databases[0] }}">
+    {% endif %}
+    <p><button type="submit">Import</button></p>
+</form>
+{% endblock %}
