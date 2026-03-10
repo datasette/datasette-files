@@ -1248,3 +1248,99 @@ async def test_extra_body_script_not_on_non_table_pages(tmp_path):
     response = await ds.client.get("/test")
     assert response.status_code == 200
     assert "window.__datasette_files" not in response.text
+
+
+# --- file_actions plugin hook ---
+
+
+@pytest.mark.asyncio
+async def test_file_actions_hook_no_actions_by_default(upload_dir):
+    """Without any plugin implementing file_actions, no action menu is shown."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(ds)
+    file_id = result["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}")
+    assert response.status_code == 200
+    assert "File actions" not in response.text
+    assert "actions-menu-links" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_file_actions_hook_with_plugin(upload_dir):
+    """A plugin implementing file_actions adds actions to the file info page."""
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    class FileActionsTestPlugin:
+        __name__ = "FileActionsTestPlugin"
+
+        @hookimpl
+        def file_actions(self, datasette, actor, file):
+            return [
+                {
+                    "href": f"/-/convert-csv/{file['id']}",
+                    "label": "Convert to table",
+                    "description": "Import this CSV as a database table",
+                },
+            ]
+
+    pm.register(FileActionsTestPlugin(), name="undo_FileActionsTestPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+        )
+        result = await _upload_file(ds)
+        file_id = result["file_id"]
+
+        response = await ds.client.get(f"/-/files/{file_id}")
+        assert response.status_code == 200
+        assert "File actions" in response.text
+        assert "actions-menu-links" in response.text
+        assert "Convert to table" in response.text
+        assert "Import this CSV as a database table" in response.text
+        assert f"/-/convert-csv/{file_id}" in response.text
+    finally:
+        pm.unregister(name="undo_FileActionsTestPlugin")
+
+
+@pytest.mark.asyncio
+async def test_file_actions_hook_async(upload_dir):
+    """file_actions hook supports async implementations."""
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    class AsyncFileActionsPlugin:
+        __name__ = "AsyncFileActionsPlugin"
+
+        @hookimpl
+        def file_actions(self, datasette, actor, file):
+            async def inner():
+                return [
+                    {
+                        "href": f"/-/async-action/{file['id']}",
+                        "label": "Async action",
+                    },
+                ]
+
+            return inner
+
+    pm.register(AsyncFileActionsPlugin(), name="undo_AsyncFileActionsPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+        )
+        result = await _upload_file(ds)
+        file_id = result["file_id"]
+
+        response = await ds.client.get(f"/-/files/{file_id}")
+        assert response.status_code == 200
+        assert "Async action" in response.text
+        assert f"/-/async-action/{file_id}" in response.text
+    finally:
+        pm.unregister(name="undo_AsyncFileActionsPlugin")
