@@ -1279,7 +1279,7 @@ async def test_file_actions_hook_with_plugin(upload_dir):
         __name__ = "FileActionsTestPlugin"
 
         @hookimpl
-        def file_actions(self, datasette, actor, file):
+        def file_actions(self, datasette, actor, file, preview_bytes):
             return [
                 {
                     "href": f"/-/convert-csv/{file['id']}",
@@ -1318,7 +1318,7 @@ async def test_file_actions_hook_async(upload_dir):
         __name__ = "AsyncFileActionsPlugin"
 
         @hookimpl
-        def file_actions(self, datasette, actor, file):
+        def file_actions(self, datasette, actor, file, preview_bytes):
             async def inner():
                 return [
                     {
@@ -1344,3 +1344,65 @@ async def test_file_actions_hook_async(upload_dir):
         assert f"/-/async-action/{file_id}" in response.text
     finally:
         pm.unregister(name="undo_AsyncFileActionsPlugin")
+
+
+@pytest.mark.asyncio
+async def test_file_actions_suggestion_based_on_preview_bytes(upload_dir):
+    """Plugin can inspect preview_bytes to decide whether to suggest an action."""
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    class CsvSuggestionPlugin:
+        __name__ = "CsvSuggestionPlugin"
+
+        @hookimpl
+        def file_actions(self, datasette, actor, file, preview_bytes):
+            # Only suggest for files that look like CSV
+            if file.get("content_type") == "text/csv" or file.get(
+                "filename", ""
+            ).endswith(".csv"):
+                try:
+                    text = preview_bytes.decode("utf-8", errors="ignore")
+                    if "," in text:
+                        return [
+                            {
+                                "href": f"/-/import-csv/{file['id']}",
+                                "label": "Import as table",
+                                "description": "Import this CSV file as a database table",
+                            },
+                        ]
+                except Exception:
+                    pass
+            return []
+
+    pm.register(CsvSuggestionPlugin(), name="undo_CsvSuggestionPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+        )
+
+        # Upload a CSV file - should get the action suggested
+        csv_result = await _upload_file(
+            ds,
+            filename="data.csv",
+            content=b"name,age\nAlice,30\nBob,25\n",
+            content_type="text/csv",
+        )
+        response = await ds.client.get(f"/-/files/{csv_result['file_id']}")
+        assert response.status_code == 200
+        assert "Import as table" in response.text
+        assert f"/-/import-csv/{csv_result['file_id']}" in response.text
+
+        # Upload a plain text file - should NOT get the action
+        txt_result = await _upload_file(
+            ds,
+            filename="notes.txt",
+            content=b"Just some plain text notes.",
+            content_type="text/plain",
+        )
+        response = await ds.client.get(f"/-/files/{txt_result['file_id']}")
+        assert response.status_code == 200
+        assert "Import as table" not in response.text
+    finally:
+        pm.unregister(name="undo_CsvSuggestionPlugin")
