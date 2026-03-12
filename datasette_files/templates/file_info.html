@@ -54,15 +54,15 @@
 </table>
 
 {% if file.content_type and file.content_type.startswith("image/") %}
-<p><img src="/-/files/{{ file.id }}/download" alt="{{ file.filename }}" style="max-width: 600px;"></p>
+<p><img src="{{ urls.path('/-/files/' ~ file.id ~ '/download') }}" alt="{{ file.filename }}" style="max-width: 600px;"></p>
 {% endif %}
 
-<p><a href="/-/files/{{ file.id }}/download">Download {{ file.filename }}</a></p>
+<p><a href="{{ urls.path('/-/files/' ~ file.id ~ '/download') }}">Download {{ file.filename }}</a></p>
 
 <h2>Search text</h2>
 
 {% if can_edit %}
-<form method="post" action="/-/files/{{ file.id }}">
+<form method="post" action="{{ urls.path('/-/files/' ~ file.id) }}">
     <p>
         <textarea name="search_text" rows="4" cols="60" placeholder="Add searchable text for this file...">{{ file.search_text or "" }}</textarea>
     </p>

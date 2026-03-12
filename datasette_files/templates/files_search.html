@@ -5,7 +5,7 @@
 {% block content %}
 <h1>Search files</h1>
 
-<form action="/-/files/search" method="get" style="margin-bottom: 1.5em;">
+<form action="{{ urls.path('/-/files/search') }}" method="get" style="margin-bottom: 1.5em;">
     <p>
         <input type="search" name="q" value="{{ q }}" placeholder="Search filenames..." style="width: 300px; padding: 6px;">
         {% if sources|length > 1 %}
@@ -24,37 +24,7 @@
 <p>No files found for "{{ q }}".</p>
 {% elif not q and not files %}
 <p>No files available.</p>
-{% elif files %}
-<table>
-    <thead>
-        <tr>
-            <th>Filename</th>
-            <th>Type</th>
-            <th>Size</th>
-            <th>Source</th>
-            <th>Uploaded</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for file in files %}
-        <tr>
-            <td>
-                {% if file.content_type and file.content_type.startswith("image/") %}
-                <a href="/-/files/{{ file.id }}">
-                    <img src="/-/files/{{ file.id }}/download" alt="{{ file.filename }}" loading="lazy" style="max-width:60px;max-height:40px;vertical-align:middle;border-radius:2px;margin-right:6px;">
-                    {{ file.filename }}
-                </a>
-                {% else %}
-                <a href="/-/files/{{ file.id }}">{{ file.filename }}</a>
-                {% endif %}
-            </td>
-            <td>{{ file.content_type or "" }}</td>
-            <td>{{ file.size }} bytes</td>
-            <td>{{ file.source_slug }}</td>
-            <td>{{ file.created_at }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+{% else %}
+{% include "_files_table.html" with context %}
 {% endif %}
 {% endblock %}

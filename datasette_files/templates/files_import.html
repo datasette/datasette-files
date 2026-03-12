@@ -7,7 +7,7 @@
 
 <h2>Import options</h2>
 
-<form method="post" action="/-/files/import/{{ file.id }}">
+<form method="post" action="{{ urls.path('/-/files/import/' ~ file.id) }}">
     <p>
         <label for="table_name">Table name:</label>
         <input type="text" name="table_name" id="table_name" value="{{ default_table_name }}" required>

@@ -592,6 +592,172 @@ async def test_search_source_filter(datasette_browse_allowed, upload_dir):
     assert len(response.json()["files"]) == 0
 
 
+# --- Files index page ---
+
+
+@pytest.mark.asyncio
+async def test_files_index_page(datasette_browse_allowed, upload_dir):
+    """/-/files index page lists sources with file counts."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="a.txt", content=b"aaa")
+    await _upload_file(ds, filename="b.txt", content=b"bbb")
+
+    response = await ds.client.get("/-/files")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "test-uploads" in response.text
+    # Should contain a link to the source page
+    assert "/-/files/source/test-uploads" in response.text
+
+
+@pytest.mark.asyncio
+async def test_files_index_no_permission(datasette_with_files):
+    """/-/files shows no sources when actor lacks files-browse permission."""
+    ds = datasette_with_files
+    response = await ds.client.get("/-/files")
+    assert response.status_code == 200
+    assert "No sources available" in response.text
+
+
+@pytest.mark.asyncio
+async def test_files_index_multi_source(tmp_path):
+    """/-/files shows only sources the actor can browse."""
+    public_dir = str(tmp_path / "public")
+    private_dir = str(tmp_path / "private")
+    os.makedirs(public_dir)
+    os.makedirs(private_dir)
+
+    ds = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "public-files": {
+                            "storage": "filesystem",
+                            "config": {"root": public_dir},
+                        },
+                        "private-files": {
+                            "storage": "filesystem",
+                            "config": {"root": private_dir},
+                        },
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": {
+                    "public-files": {"allow": True},
+                },
+            },
+        },
+    )
+
+    await _upload_file(ds, source="public-files", filename="pub.txt", content=b"pub")
+    await _upload_file(ds, source="private-files", filename="priv.txt", content=b"priv")
+
+    response = await ds.client.get("/-/files")
+    assert response.status_code == 200
+    assert "public-files" in response.text
+    assert "private-files" not in response.text
+
+
+# --- Source files page ---
+
+
+@pytest.mark.asyncio
+async def test_source_files_page(datasette_browse_allowed, upload_dir):
+    """/-/files/source/{slug} lists files in that source."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="src1.txt", content=b"one")
+    await _upload_file(ds, filename="src2.txt", content=b"two")
+
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "src1.txt" in response.text
+    assert "src2.txt" in response.text
+    assert "2 files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_source_files_page_shows_upload_form(tmp_path):
+    """/-/files/source/{slug} shows upload form when actor has files-upload permission."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = _make_datasette(
+        upload_dir,
+        permissions={
+            "files-browse": True,
+            "files-upload": True,
+        },
+    )
+
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 200
+    assert 'type="file"' in response.text
+    assert "Upload" in response.text
+
+
+@pytest.mark.asyncio
+async def test_source_files_page_hides_upload_without_permission(
+    datasette_browse_allowed,
+):
+    """/-/files/source/{slug} hides upload form without files-upload permission."""
+    ds = datasette_browse_allowed
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 200
+    assert 'type="file"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_source_files_denied_without_browse(datasette_with_files):
+    """/-/files/source/{slug} returns 403 without files-browse permission."""
+    ds = datasette_with_files
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_source_files_not_found(datasette_browse_allowed):
+    """/-/files/source/{slug} returns 404 for nonexistent source."""
+    ds = datasette_browse_allowed
+    response = await ds.client.get("/-/files/source/nonexistent")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_source_files_pagination(datasette_browse_allowed, upload_dir):
+    """/-/files/source/{slug} paginates with page parameter."""
+    ds = datasette_browse_allowed
+    # Upload 25 files (PAGE_SIZE is 20)
+    for i in range(25):
+        await _upload_file(
+            ds, filename=f"file{i:03d}.txt", content=f"content{i}".encode()
+        )
+
+    # Page 1 should have 20 files
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 200
+    assert "Page 1 of 2" in response.text
+    assert "Next" in response.text
+
+    # Page 2 should have 5 files
+    response = await ds.client.get("/-/files/source/test-uploads?page=2")
+    assert response.status_code == 200
+    assert "Page 2 of 2" in response.text
+    assert "Previous" in response.text
+
+
+@pytest.mark.asyncio
+async def test_source_files_empty(datasette_browse_allowed):
+    """/-/files/source/{slug} shows message when source has no files."""
+    ds = datasette_browse_allowed
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 200
+    assert "No files in this source" in response.text
+
+
 # --- Permission-filtered search ---
 
 
@@ -1468,9 +1634,7 @@ async def test_imports_table_created_at_startup(upload_dir):
     assert len(tables) == 1
 
     # Verify expected columns
-    columns = (
-        await db.execute("PRAGMA table_info(_datasette_files_imports)")
-    ).rows
+    columns = (await db.execute("PRAGMA table_info(_datasette_files_imports)")).rows
     col_names = {row["name"] for row in columns}
     assert "id" in col_names
     assert "file_id" in col_names
@@ -1626,9 +1790,7 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 
     # Verify import job was created in internal DB
     internal_db = ds.get_internal_database()
-    jobs = (
-        await internal_db.execute("SELECT * FROM _datasette_files_imports")
-    ).rows
+    jobs = (await internal_db.execute("SELECT * FROM _datasette_files_imports")).rows
     assert len(jobs) == 1
     job = dict(jobs[0])
     assert job["file_id"] == file_id
