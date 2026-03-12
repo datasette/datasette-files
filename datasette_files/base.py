@@ -90,6 +90,15 @@ class Storage(ABC):
             f"{self.__class__.__name__} does not support signed download URLs"
         )
 
+    async def read_bytes(self, path: str, num_bytes: int = 2048) -> bytes:
+        """Return up to num_bytes from the start of a file.
+
+        Storage backends can override this to avoid reading the full file
+        (e.g. using HTTP Range headers for S3).
+        """
+        content = await self.read_file(path)
+        return content[:num_bytes]
+
     async def stream_file(self, path: str) -> AsyncIterator[bytes]:
         """Yield file content in chunks."""
         yield await self.read_file(path)

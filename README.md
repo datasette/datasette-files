@@ -164,6 +164,8 @@ This works for any text column — store a `df-...` ID returned from the upload 
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET` | `/-/files` | Files index page (HTML) |
+| `GET` | `/-/files/source/{source_slug}` | Source file listing with upload (HTML) |
 | `GET` | `/-/files/search` | Search files (HTML) |
 | `GET` | `/-/files/search.json?q=&source=` | Search files (JSON) |
 | `GET` | `/-/files/sources.json` | List configured sources |
@@ -372,6 +374,8 @@ async def receive_upload(self, path: str, content: bytes, content_type: str) -> 
 
 **`download_url(path, expires_in)`** — Return a signed/expiring download URL. Required if `can_generate_signed_urls` is `True`.
 
+**`read_bytes(path, num_bytes)`** — Return up to `num_bytes` from the start of a file. The default implementation reads the full file with `read_file()` and slices it. Storage backends should override this to avoid downloading entire files — for example, S3 backends can use an HTTP `Range` header to fetch only the requested bytes. Used by the file info page to provide `preview_bytes` to `file_actions` hooks.
+
 **`stream_file(path)`** — Yield file content in chunks as an async iterator. The default implementation reads the entire file with `read_file()` and yields it as a single chunk.
 
 **`thumbnail_url(path, width, height)`** — Return a URL for a thumbnail of the file, or `None`.
@@ -425,6 +429,14 @@ class S3Storage(Storage):
     async def read_file(self, path: str) -> bytes:
         resp = self.client.get_object(
             Bucket=self.bucket, Key=self._key(path)
+        )
+        return resp["Body"].read()
+
+    async def read_bytes(self, path: str, num_bytes: int = 2048) -> bytes:
+        resp = self.client.get_object(
+            Bucket=self.bucket,
+            Key=self._key(path),
+            Range=f"bytes=0-{num_bytes - 1}",
         )
         return resp["Body"].read()
 
