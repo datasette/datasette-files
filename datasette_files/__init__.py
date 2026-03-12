@@ -491,13 +491,11 @@ async def file_info(request, datasette):
 
     file_dict = dict(row)
 
-    # Read preview bytes for file action suggestions
     source_slug = row["source_slug"]
     preview_bytes = b""
     if source_slug in _sources:
         try:
-            content = await _sources[source_slug].read_file(row["path"])
-            preview_bytes = content[:2048]
+            preview_bytes = await _sources[source_slug].read_bytes(row["path"])
         except Exception:
             pass
 
