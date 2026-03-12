@@ -993,6 +993,8 @@ async def _run_csv_import(
         bytes_read = 0
 
         for row_values in reader:
+            if not row_values:
+                continue
             row_dict = dict(zip(columns, row_values))
             batch.append(row_dict)
             # Estimate bytes read from row content
