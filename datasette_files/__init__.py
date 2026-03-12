@@ -1240,6 +1240,24 @@ _FILE_INFO_PATH_RE = re.compile(r"^/-/files/df-[a-z0-9]{26}$")
 
 
 @hookimpl
+async def homepage_actions(datasette, actor, request):
+    resources_sql = await datasette.allowed_resources_sql(
+        action="files-browse",
+        actor=actor,
+    )
+    db = datasette.get_internal_database()
+    allowed_rows = (await db.execute(resources_sql.sql, resources_sql.params)).rows
+    if allowed_rows:
+        return [
+            {
+                "href": datasette.urls.path("/-/files"),
+                "label": "Manage files",
+                "description": "Browse and manage uploaded files",
+            }
+        ]
+
+
+@hookimpl
 def skip_csrf(datasette, scope):
     if scope["type"] != "http":
         return False

@@ -592,6 +592,28 @@ async def test_search_source_filter(datasette_browse_allowed, upload_dir):
     assert len(response.json()["files"]) == 0
 
 
+# --- Homepage action ---
+
+
+@pytest.mark.asyncio
+async def test_homepage_action_with_browse_permission(datasette_browse_allowed):
+    """Homepage shows 'Manage files' action when actor has files-browse permission."""
+    ds = datasette_browse_allowed
+    response = await ds.client.get("/")
+    assert response.status_code == 200
+    assert "Manage files" in response.text
+    assert "/-/files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_homepage_action_without_permission(datasette_with_files):
+    """Homepage does not show 'Manage files' action without files-browse permission."""
+    ds = datasette_with_files
+    response = await ds.client.get("/")
+    assert response.status_code == 200
+    assert "Manage files" not in response.text
+
+
 # --- Files index page ---
 
 
