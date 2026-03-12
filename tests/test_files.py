@@ -46,12 +46,24 @@ def datasette_with_files(upload_dir):
 
 
 @pytest.fixture
+def datasette_upload_allowed(upload_dir):
+    """Datasette with files-upload granted but NOT files-browse (default deny)."""
+    return _make_datasette(
+        upload_dir,
+        permissions={
+            "files-upload": True,
+        },
+    )
+
+
+@pytest.fixture
 def datasette_browse_allowed(upload_dir):
-    """Datasette with files-browse granted to all actors."""
+    """Datasette with files-browse and files-upload granted to all actors."""
     return _make_datasette(
         upload_dir,
         permissions={
             "files-browse": True,
+            "files-upload": True,
         },
     )
 
@@ -268,8 +280,8 @@ async def test_actions_registered(datasette_with_files):
 
 
 @pytest.mark.asyncio
-async def test_upload_file(datasette_with_files, upload_dir):
-    ds = datasette_with_files
+async def test_upload_file(datasette_upload_allowed, upload_dir):
+    ds = datasette_upload_allowed
 
     data = await _upload_file(ds)
     assert "file_id" in data
@@ -308,9 +320,30 @@ async def test_upload_requires_valid_source(datasette_with_files):
 
 
 @pytest.mark.asyncio
-async def test_file_info_denied_without_permission(datasette_with_files):
-    """Without files-browse permission, file info returns 403."""
+async def test_upload_post_denied_without_permission(datasette_with_files):
+    """POST to upload endpoint should return 403 without files-upload permission."""
     ds = datasette_with_files
+    response = await ds.client.post(
+        "/-/files/upload/test-uploads",
+        content=(
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"sneaky upload\r\n"
+            b"--boundary--\r\n"
+        ),
+        headers={
+            "Content-Type": "multipart/form-data; boundary=boundary",
+        },
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_file_info_denied_without_permission(datasette_upload_allowed):
+    """Without files-browse permission, file info returns 403."""
+    ds = datasette_upload_allowed
     data = await _upload_file(ds)
     file_id = data["file_id"]
 
@@ -319,8 +352,8 @@ async def test_file_info_denied_without_permission(datasette_with_files):
 
 
 @pytest.mark.asyncio
-async def test_file_json_denied_without_permission(datasette_with_files):
-    ds = datasette_with_files
+async def test_file_json_denied_without_permission(datasette_upload_allowed):
+    ds = datasette_upload_allowed
     data = await _upload_file(ds)
     file_id = data["file_id"]
 
@@ -329,8 +362,8 @@ async def test_file_json_denied_without_permission(datasette_with_files):
 
 
 @pytest.mark.asyncio
-async def test_file_download_denied_without_permission(datasette_with_files):
-    ds = datasette_with_files
+async def test_file_download_denied_without_permission(datasette_upload_allowed):
+    ds = datasette_upload_allowed
     data = await _upload_file(ds)
     file_id = data["file_id"]
 
@@ -339,9 +372,9 @@ async def test_file_download_denied_without_permission(datasette_with_files):
 
 
 @pytest.mark.asyncio
-async def test_batch_json_denied_without_permission(datasette_with_files):
+async def test_batch_json_denied_without_permission(datasette_upload_allowed):
     """batch.json excludes files from sources the actor cannot browse."""
-    ds = datasette_with_files
+    ds = datasette_upload_allowed
     data = await _upload_file(ds)
     file_id = data["file_id"]
 
@@ -563,9 +596,9 @@ async def test_search_source_filter(datasette_browse_allowed, upload_dir):
 
 
 @pytest.mark.asyncio
-async def test_search_denied_without_permission(datasette_with_files, upload_dir):
+async def test_search_denied_without_permission(datasette_upload_allowed, upload_dir):
     """Search returns empty results when actor lacks files-browse permission."""
-    ds = datasette_with_files
+    ds = datasette_upload_allowed
     await _upload_file(ds, filename="secret.txt", content=b"secret data")
 
     response = await ds.client.get("/-/files/search.json")
@@ -576,9 +609,9 @@ async def test_search_denied_without_permission(datasette_with_files, upload_dir
 
 
 @pytest.mark.asyncio
-async def test_search_with_fts_query_denied(datasette_with_files, upload_dir):
+async def test_search_with_fts_query_denied(datasette_upload_allowed, upload_dir):
     """FTS search also returns empty when no browse permission."""
-    ds = datasette_with_files
+    ds = datasette_upload_allowed
     await _upload_file(ds, filename="secret.txt", content=b"secret data")
 
     response = await ds.client.get("/-/files/search.json?q=secret")
@@ -612,6 +645,7 @@ async def test_search_multi_source_permission(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": {
                     "public-files": {"allow": True},
                     # private-files: no allow = default deny
@@ -667,6 +701,7 @@ async def test_search_multi_source_fts_filtered(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": {
                     "public-files": {"allow": True},
                 },
@@ -710,6 +745,7 @@ async def test_search_actor_specific_permission(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": {
                     "team-files": {
                         "allow": {"id": "alice"},
@@ -769,6 +805,7 @@ async def test_file_info_actor_permission(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": {
                     "restricted": {
                         "allow": {"id": "alice"},
@@ -910,6 +947,7 @@ async def test_edit_search_text_with_permission(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": True,
                 "files-edit": {
                     "editable": {
@@ -972,6 +1010,7 @@ async def test_edit_form_visible_with_permission(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": True,
                 "files-edit": {
                     "editable": {
@@ -1021,6 +1060,7 @@ async def test_edit_search_text_non_editor_denied(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": True,
                 "files-edit": {
                     "editable": {
