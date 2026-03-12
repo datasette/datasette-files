@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{{ source_slug }}{% endblock %}
+
+{% block content %}
+<h1>{{ source_slug }}</h1>
+
+{% if can_upload %}
+<form method="post" enctype="multipart/form-data" action="{{ urls.path('/-/files/upload/' ~ source_slug) }}" style="margin-bottom: 1.5em;">
+    <p>
+        <input type="file" name="file" required>
+        <button type="submit">Upload</button>
+    </p>
+</form>
+{% endif %}
+
+{% if files %}
+<p>{{ total }} file{{ "s" if total != 1 else "" }}</p>
+{% set show_source = False %}
+{% include "_files_table.html" with context %}
+
+{% if total_pages > 1 %}
+<p style="margin-top: 1em;">
+    {% if page > 1 %}
+    <a href="{{ urls.path('/-/files/source/' ~ source_slug) }}?page={{ page - 1 }}">Previous</a>
+    {% endif %}
+    Page {{ page }} of {{ total_pages }}
+    {% if page < total_pages %}
+    <a href="{{ urls.path('/-/files/source/' ~ source_slug) }}?page={{ page + 1 }}">Next</a>
+    {% endif %}
+</p>
+{% endif %}
+{% else %}
+<p>No files in this source.</p>
+{% endif %}
+{% endblock %}

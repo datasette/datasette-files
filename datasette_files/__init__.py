@@ -266,24 +266,20 @@ def startup(datasette):
 
         # Drop and recreate FTS table + triggers to ensure schema matches
         # (safe because FTS is a secondary index rebuilt from content table)
-        await db.execute_write_script(
-            """
+        await db.execute_write_script("""
             DROP TRIGGER IF EXISTS datasette_files_ai;
             DROP TRIGGER IF EXISTS datasette_files_ad;
             DROP TRIGGER IF EXISTS datasette_files_au;
             DROP TABLE IF EXISTS datasette_files_fts;
-            """
-        )
+            """)
         await db.execute_write_script(FTS_SQL)
         await db.execute_write_script(FTS_TRIGGERS_SQL)
 
         # Backfill FTS from content table
-        await db.execute_write(
-            """
+        await db.execute_write("""
             INSERT INTO datasette_files_fts(rowid, id, filename, content_type, search_text)
             SELECT rowid, id, filename, content_type, search_text FROM datasette_files
-            """
-        )
+            """)
 
         # Collect storage types from plugins
         storage_types = dict(BUILT_IN_STORAGE_TYPES)
@@ -647,6 +643,46 @@ async def sources_json(request, datasette):
     return Response.json({"sources": sources})
 
 
+PAGE_SIZE = 20
+
+
+async def _list_files(db, allowed_slugs, source_filter=None, offset=0, limit=PAGE_SIZE):
+    """List recent files filtered to allowed sources, with pagination."""
+    if not allowed_slugs:
+        return [], 0
+    placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+    where_source = "AND s.slug = :source_filter" if source_filter else ""
+    params = {}
+    for i, slug in enumerate(allowed_slugs):
+        params[f"_slug_{i}"] = slug
+    if source_filter:
+        params["source_filter"] = source_filter
+
+    count_sql = """
+        SELECT COUNT(*) as count
+        FROM datasette_files f
+        JOIN datasette_files_sources s ON f.source_id = s.id
+        WHERE s.slug IN ({placeholders})
+        {where_source}
+    """.format(placeholders=placeholders, where_source=where_source)
+    total = (await db.execute(count_sql, params)).first()["count"]
+
+    list_sql = """
+        SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+               f.created_at, f.uploaded_by, s.slug as source_slug
+        FROM datasette_files f
+        JOIN datasette_files_sources s ON f.source_id = s.id
+        WHERE s.slug IN ({placeholders})
+        {where_source}
+        ORDER BY f.created_at DESC
+        LIMIT :_limit OFFSET :_offset
+    """.format(placeholders=placeholders, where_source=where_source)
+    params["_limit"] = limit
+    params["_offset"] = offset
+    files = [dict(row) for row in (await db.execute(list_sql, params)).rows]
+    return files, total
+
+
 async def search_files(request, datasette):
     """GET /-/files/search - search files across sources the actor can browse."""
     q = request.args.get("q", "").strip()
@@ -694,27 +730,9 @@ async def search_files(request, datasette):
             params["source_filter"] = source_filter
         files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
     else:
-        # No query — list recent files filtered to allowed sources
-        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
-        search_sql = """
-            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
-                   f.created_at, f.uploaded_by, s.slug as source_slug
-            FROM datasette_files f
-            JOIN datasette_files_sources s ON f.source_id = s.id
-            WHERE s.slug IN ({placeholders})
-            {source_where}
-            ORDER BY f.created_at DESC
-            LIMIT 50
-        """.format(
-            placeholders=placeholders,
-            source_where="AND s.slug = :source_filter" if source_filter else "",
+        files, _ = await _list_files(
+            db, allowed_slugs, source_filter=source_filter or None, limit=50
         )
-        params = {}
-        for i, slug in enumerate(allowed_slugs):
-            params[f"_slug_{i}"] = slug
-        if source_filter:
-            params["source_filter"] = source_filter
-        files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
 
     # The allowed_slugs already represent the browsable sources
     browsable_sources = allowed_slugs
@@ -738,7 +756,92 @@ async def search_files(request, datasette):
                 "source_filter": source_filter,
                 "files": files,
                 "sources": browsable_sources,
+                "show_source": True,
             },
+            request=request,
+        )
+    )
+
+
+async def source_files(request, datasette):
+    """GET /-/files/source/{source_slug} - list files in a source with pagination."""
+    source_slug = request.url_vars["source_slug"]
+    if source_slug not in _sources:
+        raise NotFound(f"Source not found: {source_slug}")
+
+    can_browse = await datasette.allowed(
+        action="files-browse",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+    if not can_browse:
+        raise Forbidden("Permission denied: files-browse on source " + source_slug)
+
+    can_upload = await datasette.allowed(
+        action="files-upload",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+
+    db = datasette.get_internal_database()
+    try:
+        page = int(request.args.get("page", "1"))
+    except ValueError:
+        page = 1
+    if page < 1:
+        page = 1
+    offset = (page - 1) * PAGE_SIZE
+
+    files, total = await _list_files(db, [source_slug], offset=offset, limit=PAGE_SIZE)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    return Response.html(
+        await datasette.render_template(
+            "files_source.html",
+            {
+                "source_slug": source_slug,
+                "files": files,
+                "can_upload": can_upload,
+                "page": page,
+                "total_pages": total_pages,
+                "total": total,
+            },
+            request=request,
+        )
+    )
+
+
+async def files_index(request, datasette):
+    """GET /-/files - index page listing sources with file counts."""
+    db = datasette.get_internal_database()
+
+    resources_sql = await datasette.allowed_resources_sql(
+        action="files-browse",
+        actor=request.actor,
+    )
+    allowed_rows = (await db.execute(resources_sql.sql, resources_sql.params)).rows
+    allowed_slugs = [row["parent"] for row in allowed_rows]
+
+    sources = []
+    if allowed_slugs:
+        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        sql = """
+            SELECT s.slug, COUNT(f.id) as file_count
+            FROM datasette_files_sources s
+            LEFT JOIN datasette_files f ON f.source_id = s.id
+            WHERE s.slug IN ({placeholders})
+            GROUP BY s.slug
+            ORDER BY s.slug
+        """.format(placeholders=placeholders)
+        params = {}
+        for i, slug in enumerate(allowed_slugs):
+            params[f"_slug_{i}"] = slug
+        sources = [dict(row) for row in (await db.execute(sql, params)).rows]
+
+    return Response.html(
+        await datasette.render_template(
+            "files_index.html",
+            {"sources": sources},
             request=request,
         )
     )
@@ -752,12 +855,20 @@ def register_routes():
         (r"^/-/files/batch\.json$", batch_json),
         (r"^/-/files/sources\.json$", sources_json),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),
-        (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)\.json$", import_progress_view),
-        (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)$", import_progress_view),
+        (
+            r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)\.json$",
+            import_progress_view,
+        ),
+        (
+            r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)$",
+            import_progress_view,
+        ),
         (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)$", import_file_view),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)\.json$", file_json),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/download$", file_download),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)$", file_info),
+        (r"^/-/files/source/(?P<source_slug>[^/]+)$", source_files),
+        (r"^/-/files$", files_index),
     ]
 
 
@@ -839,7 +950,9 @@ def _parse_csv_preview(content_bytes, max_rows=10):
     return columns, rows, dialect
 
 
-async def _run_csv_import(datasette, import_id, storage, file_path, target_db, table_name):
+async def _run_csv_import(
+    datasette, import_id, storage, file_path, target_db, table_name
+):
     """Run CSV import as a background task, updating progress in _datasette_files_imports."""
     from sqlite_utils.utils import TypeTracker as _TypeTracker
 
@@ -889,11 +1002,17 @@ async def _run_csv_import(datasette, import_id, storage, file_path, target_db, t
             if len(batch) >= batch_size:
                 wrapped = list(tracker.wrap(batch))
                 await target_db.execute_write_fn(
-                    lambda conn, rows=wrapped: sqlite_utils.Database(conn)[table_name].insert_all(rows)
+                    lambda conn, rows=wrapped: sqlite_utils.Database(conn)[
+                        table_name
+                    ].insert_all(rows)
                 )
                 await internal_db.execute_write(
                     "UPDATE _datasette_files_imports SET row_count = :row_count, bytes_read = :bytes_read WHERE id = :id",
-                    {"id": import_id, "row_count": row_count, "bytes_read": min(bytes_read, total_size)},
+                    {
+                        "id": import_id,
+                        "row_count": row_count,
+                        "bytes_read": min(bytes_read, total_size),
+                    },
                 )
                 batch = []
 
@@ -901,14 +1020,18 @@ async def _run_csv_import(datasette, import_id, storage, file_path, target_db, t
         if batch:
             wrapped = list(tracker.wrap(batch))
             await target_db.execute_write_fn(
-                lambda conn, rows=wrapped: sqlite_utils.Database(conn)[table_name].insert_all(rows)
+                lambda conn, rows=wrapped: sqlite_utils.Database(conn)[
+                    table_name
+                ].insert_all(rows)
             )
 
         # Apply detected types via transform
         detected_types = tracker.types
         if detected_types:
             await target_db.execute_write_fn(
-                lambda conn: sqlite_utils.Database(conn)[table_name].transform(types=detected_types)
+                lambda conn: sqlite_utils.Database(conn)[table_name].transform(
+                    types=detected_types
+                )
             )
 
         # Mark as finished
@@ -969,9 +1092,7 @@ async def import_file_view(request, datasette):
         if not databases:
             # Fallback to memory databases if no file-based DBs
             databases = [
-                db_name
-                for db_name in datasette.databases
-                if db_name != "_internal"
+                db_name for db_name in datasette.databases if db_name != "_internal"
             ]
 
         return Response.html(
@@ -1003,7 +1124,9 @@ async def import_file_view(request, datasette):
     try:
         target_db = datasette.get_database(database_name)
     except KeyError:
-        return Response.json({"error": f"Database not found: {database_name}"}, status=400)
+        return Response.json(
+            {"error": f"Database not found: {database_name}"}, status=400
+        )
 
     # Create import job record
     internal_db = datasette.get_internal_database()
@@ -1029,7 +1152,9 @@ async def import_file_view(request, datasette):
 
     # Launch async import task
     asyncio.create_task(
-        _run_csv_import(datasette, import_id, storage, row["path"], target_db, table_name)
+        _run_csv_import(
+            datasette, import_id, storage, row["path"], target_db, table_name
+        )
     )
 
     return Response.redirect(f"/-/files/import/{file_id}/{import_id}")

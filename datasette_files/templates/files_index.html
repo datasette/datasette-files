@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Files{% endblock %}
+
+{% block content %}
+<h1>Files</h1>
+
+<form action="{{ urls.path('/-/files/search') }}" method="get" style="margin-bottom: 1.5em;">
+    <p>
+        <input type="search" name="q" placeholder="Search filenames..." style="width: 300px; padding: 6px;">
+        <button type="submit">Search</button>
+    </p>
+</form>
+
+{% if sources %}
+<table>
+    <thead>
+        <tr>
+            <th>Source</th>
+            <th>Files</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for source in sources %}
+        <tr>
+            <td><a href="{{ urls.path('/-/files/source/' ~ source.slug) }}">{{ source.slug }}</a></td>
+            <td>{{ source.file_count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No sources available.</p>
+{% endif %}
+{% endblock %}

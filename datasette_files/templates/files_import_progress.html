@@ -8,7 +8,7 @@
 <p>Importing into <strong>{{ job.table_name }}</strong> in database <strong>{{ job.database_name }}</strong>.</p>
 
 <import-progress
-    api-url="/-/files/import/{{ file.id }}/{{ job.id }}.json"
+    api-url="{{ urls.path('/-/files/import/' ~ file.id ~ '/' ~ job.id ~ '.json') }}"
     table-url="/{{ job.database_name }}/{{ job.table_name }}"
     poll-interval="1000"
 ></import-progress>
