@@ -1816,6 +1816,67 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_import_csv_with_empty_rows(tmp_path):
+    """CSV import handles files with empty rows (blank lines) without division by zero."""
+    import asyncio
+
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "data.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-uploads": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-upload": True,
+                "create-table": True,
+                "insert-row": True,
+            },
+        },
+    )
+
+    csv_content = b"name,age\nAlice,30\n\nBob,25\n\n\nCharlie,35\n"
+    result = await _upload_file(
+        ds,
+        filename="with_blanks.csv",
+        content=csv_content,
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.post(
+        f"/-/files/import/{file_id}",
+        data={"table_name": "with_blanks", "database_name": "data"},
+        follow_redirects=False,
+    )
+    assert response.status_code in (301, 302, 303)
+
+    await asyncio.sleep(0.5)
+
+    internal_db = ds.get_internal_database()
+    jobs = (await internal_db.execute("SELECT * FROM _datasette_files_imports")).rows
+    job = dict(jobs[0])
+    assert job["status"] == "finished"
+    assert job["row_count"] == 3
+
+    data_db = ds.get_database("data")
+    rows = (await data_db.execute("SELECT * FROM with_blanks ORDER BY name")).rows
+    assert len(rows) == 3
+    names = [dict(r)["name"] for r in rows]
+    assert names == ["Alice", "Bob", "Charlie"]
+
+
+@pytest.mark.asyncio
 async def test_import_progress_json(tmp_path):
     """GET /-/files/import/{file_id}/{import_id}.json returns progress data."""
     import asyncio
