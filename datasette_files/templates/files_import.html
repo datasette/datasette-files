@@ -5,32 +5,7 @@
 {% block content %}
 <h1>Import {{ file.filename }}</h1>
 
-<h2>Preview</h2>
-
-<table>
-    <thead>
-        <tr>
-            {% for col in columns %}
-            <th>{{ col }}</th>
-            {% endfor %}
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in preview_rows %}
-        <tr>
-            {% for val in row %}
-            <td>{{ val }}</td>
-            {% endfor %}
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-
-{% if has_more_rows %}
-<p><em>Showing first {{ preview_rows|length }} of {{ file.size }} bytes...</em></p>
-{% endif %}
-
-<h2>Import settings</h2>
+<h2>Import options</h2>
 
 <form method="post" action="/-/files/import/{{ file.id }}">
     <p>
@@ -51,4 +26,31 @@
     {% endif %}
     <p><button type="submit">Import</button></p>
 </form>
+
+<h2>Preview</h2>
+
+<div style="overflow-x: auto;">
+<table style="border-collapse: collapse; border: 1px solid #ddd;">
+    <thead>
+        <tr>
+            {% for col in columns %}
+            <th style="border: 1px solid #ddd; padding: 4px 8px; font-weight: bold;">{{ col }}</th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in preview_rows %}
+        <tr>
+            {% for val in row %}
+            <td style="border: 1px solid #ddd; padding: 4px 8px;">{{ val }}</td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+
+{% if has_more_rows %}
+<p><em>Showing first {{ preview_rows|length }} of {{ file.size }} bytes...</em></p>
+{% endif %}
 {% endblock %}
