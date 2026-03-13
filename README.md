@@ -99,26 +99,88 @@ permissions:
 
 ### Uploading files
 
-Upload a file by sending a `POST` request with multipart form data to `/-/files/upload/{source_slug}`:
+The upload UI provides a drag-and-drop area for multiple files, with per-file progress bars and SVG file-type icon previews. Visit `/-/files/upload/{source_slug}` or use the upload area on any source page.
+
+#### Upload API
+
+All uploads use a three-step flow: **prepare**, **upload content**, **complete**. This applies to all storage backends — for filesystem, the content goes through Datasette; for S3-style backends, the content goes directly to the storage service.
+
+**Step 1: Prepare**
 
 ```bash
-curl -X POST "http://localhost:8001/-/files/upload/my-files" \
-  -F "file=@photo.jpg"
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/prepare" \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "photo.jpg", "content_type": "image/jpeg", "size": 48210}'
 ```
 
-The response includes the file's unique ID and metadata:
+Returns upload instructions:
 
 ```json
 {
-  "file_id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
-  "filename": "photo.jpg",
-  "content_type": "image/jpeg",
-  "size": 48210,
-  "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq"
+  "ok": true,
+  "upload_token": "tok_01j5...",
+  "upload_url": "/-/files/upload/my-files/-/content",
+  "upload_method": "POST",
+  "upload_headers": {},
+  "upload_fields": {"upload_token": "tok_01j5..."}
+}
+```
+
+**Step 2: Upload content** — send the file to the `upload_url` from step 1:
+
+```bash
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/content" \
+  -F "upload_token=tok_01j5..." \
+  -F "file=@photo.jpg"
+```
+
+**Step 3: Complete** — finalize the upload and register the file:
+
+```bash
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/complete" \
+  -H "Content-Type: application/json" \
+  -d '{"upload_token": "tok_01j5..."}'
+```
+
+Returns the registered file:
+
+```json
+{
+  "ok": true,
+  "file": {
+    "id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
+    "filename": "photo.jpg",
+    "content_type": "image/jpeg",
+    "size": 48210,
+    "source_slug": "my-files",
+    "download_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/download"
+  }
 }
 ```
 
 File IDs use the format `df-{ULID}` — the `df-` prefix makes them instantly recognizable when stored in database columns.
+
+The legacy single-step upload endpoint (`POST /-/files/upload/{source_slug}` with multipart form data) is still supported for backwards compatibility.
+
+### Deleting files
+
+```bash
+curl -X POST "http://localhost:8001/-/files/df-01j5.../-/delete" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Requires `files-delete` permission on the file's source.
+
+### Updating file metadata
+
+```bash
+curl -X POST "http://localhost:8001/-/files/df-01j5.../-/update" \
+  -H "Content-Type: application/json" \
+  -d '{"update": {"search_text": "Annual report 2025"}}'
+```
+
+Requires `files-edit` permission on the file's source.
 
 ### Viewing files
 
@@ -170,7 +232,12 @@ This works for any text column — store a `df-...` ID returned from the upload 
 | `GET` | `/-/files/search.json?q=&source=` | Search files (JSON) |
 | `GET` | `/-/files/sources.json` | List configured sources |
 | `GET` | `/-/files/batch.json?id=df-...&id=df-...` | Bulk file metadata |
-| `POST` | `/-/files/upload/{source_slug}` | Upload a file (multipart) |
+| `POST` | `/-/files/upload/{source}/-/prepare` | Prepare upload (get instructions) |
+| `POST` | `/-/files/upload/{source}/-/content` | Upload file content |
+| `POST` | `/-/files/upload/{source}/-/complete` | Complete upload (register file) |
+| `POST` | `/-/files/upload/{source_slug}` | Legacy single-step upload (multipart) |
+| `POST` | `/-/files/{file_id}/-/delete` | Delete a file |
+| `POST` | `/-/files/{file_id}/-/update` | Update file metadata |
 | `GET` | `/-/files/{file_id}` | File info page (HTML) |
 | `GET` | `/-/files/{file_id}.json` | File metadata (JSON) |
 | `GET` | `/-/files/{file_id}/download` | Download file content |
