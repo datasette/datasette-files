@@ -353,15 +353,16 @@ async def upload_file(request, datasette):
     storage = _sources[source_slug]
     meta = _source_meta[source_slug]
 
+    # Check upload permission for both GET (form page) and POST (actual upload)
+    can_upload = await datasette.allowed(
+        action="files-upload",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+    if not can_upload:
+        raise Forbidden("Permission denied: files-upload on source " + source_slug)
+
     if request.method == "GET":
-        # Check upload permission for the form page
-        can_upload = await datasette.allowed(
-            action="files-upload",
-            resource=FileSourceResource(source_slug),
-            actor=request.actor,
-        )
-        if not can_upload:
-            raise Forbidden("Permission denied: files-upload on source " + source_slug)
         return Response.html(
             await datasette.render_template(
                 "files_upload.html",
