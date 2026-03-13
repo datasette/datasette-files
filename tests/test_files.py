@@ -4,106 +4,7 @@ import json
 import tempfile
 import os
 
-
-@pytest.fixture
-def upload_dir(tmp_path):
-    """Create a temporary directory for filesystem storage uploads."""
-    d = tmp_path / "uploads"
-    d.mkdir()
-    return str(d)
-
-
-def _make_datasette(upload_dir, permissions=None, extra_sources=None):
-    """Create a Datasette instance configured with file sources and optional permissions."""
-    sources = {
-        "test-uploads": {
-            "storage": "filesystem",
-            "config": {
-                "root": upload_dir,
-            },
-        }
-    }
-    if extra_sources:
-        sources.update(extra_sources)
-
-    config = {
-        "plugins": {
-            "datasette-files": {
-                "sources": sources,
-            }
-        },
-    }
-    if permissions:
-        config["permissions"] = permissions
-
-    return Datasette(memory=True, config=config)
-
-
-@pytest.fixture
-def datasette_with_files(upload_dir):
-    """Datasette with a filesystem source but no browse permissions (default deny)."""
-    return _make_datasette(upload_dir)
-
-
-@pytest.fixture
-def datasette_upload_allowed(upload_dir):
-    """Datasette with files-upload granted but NOT files-browse (default deny)."""
-    return _make_datasette(
-        upload_dir,
-        permissions={
-            "files-upload": True,
-        },
-    )
-
-
-@pytest.fixture
-def datasette_browse_allowed(upload_dir):
-    """Datasette with files-browse and files-upload granted to all actors."""
-    return _make_datasette(
-        upload_dir,
-        permissions={
-            "files-browse": True,
-            "files-upload": True,
-        },
-    )
-
-
-@pytest.fixture
-def datasette_browse_only(upload_dir):
-    """Datasette with files-browse granted but NOT files-upload."""
-    return _make_datasette(
-        upload_dir,
-        permissions={
-            "files-browse": True,
-        },
-    )
-
-
-async def _upload_file(
-    ds,
-    source="test-uploads",
-    filename="test.txt",
-    content=b"Hello from test!",
-    content_type="text/plain",
-):
-    """Helper to upload a file and return the response JSON."""
-    response = await ds.client.post(
-        f"/-/files/upload/{source}",
-        content=(
-            b"--boundary\r\n"
-            b'Content-Disposition: form-data; name="file"; filename="'
-            + filename.encode()
-            + b'"\r\n'
-            b"Content-Type: " + content_type.encode() + b"\r\n"
-            b"\r\n" + content + b"\r\n"
-            b"--boundary--\r\n"
-        ),
-        headers={
-            "Content-Type": "multipart/form-data; boundary=boundary",
-        },
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+from conftest import _upload_file, _make_datasette
 
 
 # --- Plugin installation ---
@@ -729,8 +630,8 @@ async def test_source_files_page_shows_upload_form(tmp_path):
 
     response = await ds.client.get("/-/files/source/test-uploads")
     assert response.status_code == 200
-    assert 'type="file"' in response.text
-    assert "Upload" in response.text
+    assert "datasette-file-upload" in response.text
+    assert 'source="test-uploads"' in response.text
 
 
 @pytest.mark.asyncio
