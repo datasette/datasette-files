@@ -68,6 +68,17 @@ def datasette_browse_allowed(upload_dir):
     )
 
 
+@pytest.fixture
+def datasette_browse_only(upload_dir):
+    """Datasette with files-browse granted but NOT files-upload."""
+    return _make_datasette(
+        upload_dir,
+        permissions={
+            "files-browse": True,
+        },
+    )
+
+
 async def _upload_file(
     ds,
     source="test-uploads",
@@ -667,6 +678,7 @@ async def test_files_index_multi_source(tmp_path):
                 }
             },
             "permissions": {
+                "files-upload": True,
                 "files-browse": {
                     "public-files": {"allow": True},
                 },
@@ -723,10 +735,10 @@ async def test_source_files_page_shows_upload_form(tmp_path):
 
 @pytest.mark.asyncio
 async def test_source_files_page_hides_upload_without_permission(
-    datasette_browse_allowed,
+    datasette_browse_only,
 ):
     """/-/files/source/{slug} hides upload form without files-upload permission."""
-    ds = datasette_browse_allowed
+    ds = datasette_browse_only
     response = await ds.client.get("/-/files/source/test-uploads")
     assert response.status_code == 200
     assert 'type="file"' not in response.text
