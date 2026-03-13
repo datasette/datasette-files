@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from datasette import hookimpl, Response, NotFound, Forbidden
 from datasette.permissions import Action, PermissionSQL, Resource
 from datasette.plugins import pm
@@ -11,6 +12,10 @@ from .base import StorageCapabilities
 from .filesystem import FilesystemStorage
 
 _FILE_ID_RE = re.compile(r"^df-[a-z0-9]{26}$")
+
+# Upload token store: {token: {source_slug, filename, content_type, size, path, file_id, created_at, used}}
+_upload_tokens = {}
+_UPLOAD_TOKEN_TTL = 3600  # 1 hour
 
 pm.add_hookspecs(hookspecs)
 
@@ -423,6 +428,368 @@ async def upload_file(request, datasette):
             "content_type": content_type,
             "size": file_meta.size or len(content),
             "url": f"/-/files/{file_id}",
+        }
+    )
+
+
+def _clean_expired_tokens():
+    """Remove expired upload tokens."""
+    now = time.time()
+    expired = [t for t, v in _upload_tokens.items() if now - v["created_at"] > _UPLOAD_TOKEN_TTL]
+    for t in expired:
+        del _upload_tokens[t]
+
+
+async def _check_upload_permission_json(datasette, request, source_slug):
+    """Check files-upload permission, return error Response or None."""
+    allowed = await datasette.allowed(
+        action="files-upload",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+    if not allowed:
+        return Response.json(
+            {"ok": False, "errors": ["Permission denied"]}, status=403
+        )
+    return None
+
+
+async def upload_prepare(request, datasette):
+    """POST /-/files/upload/{source_slug}/-/prepare - get upload instructions."""
+    source_slug = request.url_vars["source_slug"]
+    if source_slug not in _sources:
+        raise NotFound(f"Source not found: {source_slug}")
+
+    error = await _check_upload_permission_json(datasette, request, source_slug)
+    if error:
+        return error
+
+    try:
+        body = json.loads(await request.post_body())
+    except (json.JSONDecodeError, ValueError):
+        return Response.json({"ok": False, "errors": ["Invalid JSON"]}, status=400)
+
+    filename = body.get("filename")
+    if not filename:
+        return Response.json(
+            {"ok": False, "errors": ["filename is required"]}, status=400
+        )
+
+    content_type = body.get("content_type", "application/octet-stream")
+    size = body.get("size")
+
+    filename = _sanitize_filename(filename)
+
+    # Generate file ID and storage path
+    file_id = "df-" + str(ULID()).lower()
+    ulid_part = file_id[3:]
+    path = f"{ulid_part}/{filename}"
+
+    # Generate upload token
+    _clean_expired_tokens()
+    token = "tok_" + str(ULID()).lower()
+    _upload_tokens[token] = {
+        "source_slug": source_slug,
+        "filename": filename,
+        "content_type": content_type,
+        "size": size,
+        "path": path,
+        "file_id": file_id,
+        "created_at": time.time(),
+        "used": False,
+        "content_received": False,
+        "actor": request.actor,
+    }
+
+    # Build upload URL - for filesystem, it points to our content endpoint
+    upload_url = f"/-/files/upload/{source_slug}/-/content"
+
+    return Response.json({
+        "ok": True,
+        "upload_token": token,
+        "upload_url": upload_url,
+        "upload_method": "POST",
+        "upload_headers": {},
+        "upload_fields": {
+            "upload_token": token,
+        },
+    })
+
+
+async def upload_content(request, datasette):
+    """POST /-/files/upload/{source_slug}/-/content - receive file bytes (filesystem proxy)."""
+    source_slug = request.url_vars["source_slug"]
+    if source_slug not in _sources:
+        raise NotFound(f"Source not found: {source_slug}")
+
+    storage = _sources[source_slug]
+
+    # Parse multipart form
+    form = await request.form(files=True)
+
+    token_value = form.get("upload_token")
+    if not token_value or (hasattr(token_value, "read") and not token_value):
+        # Try string value
+        pass
+    if hasattr(token_value, "read"):
+        token_value = None
+
+    if not token_value:
+        await form.aclose()
+        return Response.json(
+            {"ok": False, "errors": ["upload_token is required"]}, status=400
+        )
+
+    token_data = _upload_tokens.get(token_value)
+    if not token_data:
+        await form.aclose()
+        return Response.json(
+            {"ok": False, "errors": ["Invalid or expired upload token"]}, status=400
+        )
+
+    if token_data["source_slug"] != source_slug:
+        await form.aclose()
+        return Response.json(
+            {"ok": False, "errors": ["Token does not match this source"]}, status=400
+        )
+
+    if token_data["content_received"]:
+        await form.aclose()
+        return Response.json(
+            {"ok": False, "errors": ["Content already uploaded for this token"]},
+            status=400,
+        )
+
+    uploaded = form.get("file")
+    if uploaded is None or not hasattr(uploaded, "read"):
+        await form.aclose()
+        return Response.json(
+            {"ok": False, "errors": ["No file provided"]}, status=400
+        )
+
+    content = await uploaded.read()
+    content_type = token_data["content_type"]
+    path = token_data["path"]
+
+    # Store the file
+    file_meta = await storage.receive_upload(path, content, content_type)
+
+    # Save metadata on the token for the complete step
+    token_data["content_received"] = True
+    token_data["file_meta"] = file_meta
+    token_data["actual_size"] = len(content)
+
+    await form.aclose()
+
+    return Response.json({"ok": True})
+
+
+async def upload_complete(request, datasette):
+    """POST /-/files/upload/{source_slug}/-/complete - finalize upload and register file."""
+    source_slug = request.url_vars["source_slug"]
+    if source_slug not in _sources:
+        raise NotFound(f"Source not found: {source_slug}")
+
+    error = await _check_upload_permission_json(datasette, request, source_slug)
+    if error:
+        return error
+
+    meta = _source_meta[source_slug]
+
+    try:
+        body = json.loads(await request.post_body())
+    except (json.JSONDecodeError, ValueError):
+        return Response.json({"ok": False, "errors": ["Invalid JSON"]}, status=400)
+
+    token_value = body.get("upload_token")
+    if not token_value:
+        return Response.json(
+            {"ok": False, "errors": ["upload_token is required"]}, status=400
+        )
+
+    token_data = _upload_tokens.get(token_value)
+    if not token_data:
+        return Response.json(
+            {"ok": False, "errors": ["Invalid or expired upload token"]}, status=400
+        )
+
+    if token_data["source_slug"] != source_slug:
+        return Response.json(
+            {"ok": False, "errors": ["Token does not match this source"]}, status=400
+        )
+
+    if not token_data["content_received"]:
+        return Response.json(
+            {"ok": False, "errors": ["File content has not been uploaded yet"]},
+            status=400,
+        )
+
+    if token_data["used"]:
+        return Response.json(
+            {"ok": False, "errors": ["This upload token has already been used"]},
+            status=400,
+        )
+
+    # Mark token as used
+    token_data["used"] = True
+
+    file_id = token_data["file_id"]
+    file_meta = token_data["file_meta"]
+    filename = token_data["filename"]
+    content_type = token_data["content_type"]
+    path = token_data["path"]
+    actor = token_data["actor"]
+
+    # Record in internal database
+    db = datasette.get_internal_database()
+    await db.execute_write(
+        """
+        INSERT INTO datasette_files
+            (id, source_id, path, filename, content_type, content_hash, size, uploaded_by)
+        VALUES
+            (:id, :source_id, :path, :filename, :content_type, :content_hash, :size, :uploaded_by)
+        """,
+        {
+            "id": file_id,
+            "source_id": meta["source_id"],
+            "path": path,
+            "filename": filename,
+            "content_type": file_meta.content_type or content_type,
+            "content_hash": file_meta.content_hash,
+            "size": file_meta.size or token_data.get("actual_size"),
+            "uploaded_by": (actor or {}).get("id"),
+        },
+    )
+
+    # Clean up token
+    del _upload_tokens[token_value]
+
+    # Fetch the created record for the response
+    row = await _get_file_record(datasette, file_id)
+
+    return Response.json(
+        {
+            "ok": True,
+            "file": {
+                "id": file_id,
+                "filename": row["filename"],
+                "content_type": row["content_type"],
+                "content_hash": row["content_hash"],
+                "size": row["size"],
+                "width": row["width"],
+                "height": row["height"],
+                "source_slug": row["source_slug"],
+                "uploaded_by": row["uploaded_by"],
+                "created_at": row["created_at"],
+                "url": f"/-/files/{file_id}",
+                "download_url": f"/-/files/{file_id}/download",
+            },
+        },
+        status=201,
+    )
+
+
+async def file_delete(request, datasette):
+    """POST /-/files/{file_id}/-/delete - delete a file."""
+    file_id = request.url_vars["file_id"]
+    row = await _get_file_record(datasette, file_id)
+    if row is None:
+        raise NotFound(f"File not found: {file_id}")
+
+    source_slug = row["source_slug"]
+
+    # Check delete permission
+    allowed = await datasette.allowed(
+        action="files-delete",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+    if not allowed:
+        raise Forbidden("Permission denied: files-delete on source " + source_slug)
+
+    if source_slug not in _sources:
+        raise NotFound(f"Source not found: {source_slug}")
+
+    storage = _sources[source_slug]
+
+    if not storage.capabilities.can_delete:
+        return Response.json(
+            {"ok": False, "errors": ["This storage backend does not support deletion"]},
+            status=400,
+        )
+
+    # Delete from storage backend
+    await storage.delete_file(row["path"])
+
+    # Delete from internal database
+    db = datasette.get_internal_database()
+    await db.execute_write(
+        "DELETE FROM datasette_files WHERE id = ?", [file_id]
+    )
+
+    return Response.json({"ok": True})
+
+
+async def file_update(request, datasette):
+    """POST /-/files/{file_id}/-/update - update file metadata."""
+    file_id = request.url_vars["file_id"]
+    row = await _get_file_record(datasette, file_id)
+    if row is None:
+        raise NotFound(f"File not found: {file_id}")
+
+    source_slug = row["source_slug"]
+
+    # Check edit permission
+    allowed = await datasette.allowed(
+        action="files-edit",
+        resource=FileSourceResource(source_slug),
+        actor=request.actor,
+    )
+    if not allowed:
+        raise Forbidden("Permission denied: files-edit on source " + source_slug)
+
+    try:
+        body = json.loads(await request.post_body())
+    except (json.JSONDecodeError, ValueError):
+        return Response.json({"ok": False, "errors": ["Invalid JSON"]}, status=400)
+
+    update = body.get("update")
+    if not update or not isinstance(update, dict):
+        return Response.json(
+            {"ok": False, "errors": ["update object is required"]}, status=400
+        )
+
+    # Only allow editing search_text for now
+    allowed_fields = {"search_text"}
+    invalid_fields = set(update.keys()) - allowed_fields
+    if invalid_fields:
+        return Response.json(
+            {
+                "ok": False,
+                "errors": [f"Cannot update fields: {', '.join(sorted(invalid_fields))}"],
+            },
+            status=400,
+        )
+
+    if not update:
+        return Response.json(
+            {"ok": False, "errors": ["No valid fields to update"]}, status=400
+        )
+
+    db = datasette.get_internal_database()
+    if "search_text" in update:
+        await db.execute_write(
+            "UPDATE datasette_files SET search_text = :search_text WHERE id = :id",
+            {"search_text": update["search_text"], "id": file_id},
+        )
+
+    # Re-fetch updated record
+    row = await _get_file_record(datasette, file_id)
+
+    return Response.json(
+        {
+            "ok": True,
+            "file": dict(row),
         }
     )
 
@@ -853,6 +1220,11 @@ def register_routes():
         (r"^/-/files/search$", search_files),
         (r"^/-/files/batch\.json$", batch_json),
         (r"^/-/files/sources\.json$", sources_json),
+        # New unified upload API (prepare/content/complete)
+        (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/prepare$", upload_prepare),
+        (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/content$", upload_content),
+        (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/complete$", upload_complete),
+        # Legacy upload endpoint (still works)
         (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),
         (
             r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)\.json$",
@@ -863,6 +1235,9 @@ def register_routes():
             import_progress_view,
         ),
         (r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)$", import_file_view),
+        # File operations (delete, update)
+        (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/-/delete$", file_delete),
+        (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/-/update$", file_update),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)\.json$", file_json),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/download$", file_download),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)$", file_info),
@@ -1262,6 +1637,10 @@ def skip_csrf(datasette, scope):
     path = scope["path"]
     if path.startswith("/-/files/upload/") or path.startswith("/-/files/import/"):
         return True
+    # Match /-/files/{file_id}/-/delete and /-/files/{file_id}/-/update
+    if _FILE_ID_RE.match(path.split("/")[-2] if path.count("/") >= 4 else ""):
+        if path.endswith("/-/delete") or path.endswith("/-/update"):
+            return True
     # POST to file info page (search_text edit form)
     if _FILE_INFO_PATH_RE.match(path):
         return True
