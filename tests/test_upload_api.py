@@ -1,10 +1,34 @@
-"""Tests for the unified prepare/upload/complete upload API."""
+"""Tests for the unified prepare/upload/complete upload API and upload UI."""
 from datasette.app import Datasette
 import pytest
 import json
 import os
 
 from conftest import _upload_file, _make_datasette
+
+
+# --- Upload page UI ---
+
+
+@pytest.mark.asyncio
+async def test_upload_page_uses_web_component(datasette_all_permissions):
+    ds = datasette_all_permissions
+    response = await ds.client.get("/-/files/upload/test-uploads")
+    assert response.status_code == 200
+    assert "datasette-file-upload" in response.text
+    assert 'source="test-uploads"' in response.text
+    assert "datasette-file-upload.js" in response.text
+
+
+@pytest.mark.asyncio
+async def test_source_page_shows_upload_component(datasette_all_permissions):
+    ds = datasette_all_permissions
+    # Upload a file so the source page has content
+    await _upload_file(ds)
+    response = await ds.client.get("/-/files/source/test-uploads")
+    assert response.status_code == 200
+    assert "datasette-file-upload" in response.text
+    assert 'source="test-uploads"' in response.text
 
 
 # --- Prepare endpoint ---

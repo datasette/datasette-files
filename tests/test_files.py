@@ -630,8 +630,8 @@ async def test_source_files_page_shows_upload_form(tmp_path):
 
     response = await ds.client.get("/-/files/source/test-uploads")
     assert response.status_code == 200
-    assert 'type="file"' in response.text
-    assert "Upload" in response.text
+    assert "datasette-file-upload" in response.text
+    assert 'source="test-uploads"' in response.text
 
 
 @pytest.mark.asyncio
