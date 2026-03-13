@@ -22,21 +22,23 @@ Four permission actions scope access at the **source** level:
 All default to **deny**. Unauthorized requests receive a `403` with:
 
 ```json
-{"ok": false, "error": "Permission denied"}
+{"ok": false, "errors": ["Permission denied"]}
 ```
 
 ## Error Format
 
-All error responses use a consistent shape:
+All error responses use a consistent shape, matching Datasette's write API convention:
 
 ```json
 {
   "ok": false,
-  "error": "Human-readable error message"
+  "errors": ["Human-readable error message"]
 }
 ```
 
-HTTP status codes: `400` (bad request), `403` (forbidden), `404` (not found), `405` (method not allowed).
+The `errors` field is always an array (even for single errors), matching Datasette's `/-/create`, `/-/insert`, etc.
+
+HTTP status codes: `400` (bad request), `403` (forbidden), `404` (not found).
 
 ---
 
@@ -44,66 +46,15 @@ HTTP status codes: `400` (bad request), `403` (forbidden), `404` (not found), `4
 
 ### 1. Upload a File
 
-There are two upload flows depending on the storage backend:
+All uploads use the same two-phase API pattern, regardless of storage backend:
 
-#### Flow A: Proxy Upload (filesystem and similar backends)
+1. **Prepare**: Client tells datasette-files what it wants to upload. Server returns upload instructions (a URL, method, and any required fields/headers).
+2. **Upload**: Client sends the file to the URL from step 1. For filesystem, this is a datasette-files endpoint. For S3, this is a presigned S3 URL. The client doesn't need to know the difference.
+3. **Complete**: Client tells datasette-files the upload is done. Server verifies, registers the file, and returns the file record.
 
-The client sends the file directly to datasette-files, which proxies it to the storage backend. This is the simplest flow and is used by backends that set `requires_proxy_download: true`.
+This means every client follows the same three-step flow. The only thing that varies is _where_ step 2 sends the bytes, and the prepare response tells the client exactly where that is.
 
-```
-POST /-/files/upload/{source_slug}
-```
-
-**Permission:** `files-upload` on the source.
-
-**Request:** `multipart/form-data` with a `file` field.
-
-```
-Content-Type: multipart/form-data; boundary=...
-
---boundary
-Content-Disposition: form-data; name="file"; filename="report.pdf"
-Content-Type: application/pdf
-
-(binary data)
---boundary--
-```
-
-**Response (201):**
-
-```json
-{
-  "ok": true,
-  "file": {
-    "id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
-    "filename": "report.pdf",
-    "content_type": "application/pdf",
-    "content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "size": 245678,
-    "width": null,
-    "height": null,
-    "source_slug": "local-uploads",
-    "uploaded_by": "alice",
-    "created_at": "2026-03-13T14:30:00",
-    "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq",
-    "download_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/download"
-  }
-}
-```
-
-**Errors:**
-- `400` — No file provided, file too large, or invalid source slug.
-- `403` — Missing `files-upload` permission on this source.
-
-**Notes:**
-- The current implementation returns a flat object (`{file_id, filename, ...}`). This design wraps it in `{ok, file: {...}}` for consistency with the rest of the API and to include additional fields like `download_url` and `source_slug`.
-- Content negotiation: if the `Accept` header includes `text/html`, redirect to the file info page instead.
-
-#### Flow B: Two-Phase Upload (S3 and similar backends)
-
-For backends like S3, it's wasteful to proxy large files through the Datasette server. Instead, the client asks datasette-files for upload instructions (including signed form parameters), uploads directly to the storage backend, then notifies datasette-files that the upload is complete.
-
-**Phase 1: Request upload instructions**
+#### Step 1: Prepare
 
 ```
 POST /-/files/upload/{source_slug}/prepare
@@ -115,13 +66,30 @@ POST /-/files/upload/{source_slug}/prepare
 
 ```json
 {
-  "filename": "large-video.mp4",
-  "content_type": "video/mp4",
-  "size": 524288000
+  "filename": "report.pdf",
+  "content_type": "application/pdf",
+  "size": 245678
 }
 ```
 
 **Response (200):**
+
+For a **filesystem** backend, the upload URL points back to a datasette-files endpoint:
+
+```json
+{
+  "ok": true,
+  "upload_token": "tok_01j5a3b4c5d6e7f8g9h0jkmnpq",
+  "upload_url": "/-/files/upload/local-uploads/content",
+  "upload_method": "POST",
+  "upload_headers": {},
+  "upload_fields": {
+    "upload_token": "tok_01j5a3b4c5d6e7f8g9h0jkmnpq"
+  }
+}
+```
+
+For an **S3** backend, the upload URL points directly to S3:
 
 ```json
 {
@@ -131,8 +99,8 @@ POST /-/files/upload/{source_slug}/prepare
   "upload_method": "POST",
   "upload_headers": {},
   "upload_fields": {
-    "key": "uploads/01j5a3b4c5d6e7f8g9h0jkmnpq/large-video.mp4",
-    "Content-Type": "video/mp4",
+    "key": "uploads/01j5a3b4c5d6e7f8g9h0jkmnpq/report.pdf",
+    "Content-Type": "application/pdf",
     "X-Amz-Credential": "...",
     "X-Amz-Date": "...",
     "Policy": "...",
@@ -141,9 +109,39 @@ POST /-/files/upload/{source_slug}/prepare
 }
 ```
 
-The client then uploads the file directly to `upload_url` using the specified method, headers, and fields (as a multipart form POST for S3, or a PUT with headers for other backends). The `upload_token` is an opaque, short-lived token that ties phase 1 to phase 2.
+**Errors:**
+- `400` — Missing required fields, or file too large for this source.
+- `403` — Missing `files-upload` permission.
+- `404` — Source not found.
 
-**Phase 2: Confirm upload complete**
+**Notes on the upload token:**
+- The `upload_token` is an opaque, short-lived token (e.g. a signed JWT or ULID with server-side state) that ties the prepare, upload, and complete steps together.
+- It encodes the expected filename, content_type, size, source, storage path, and expiry.
+- Tokens expire after a configurable window (e.g. 1 hour) to prevent stale uploads.
+
+#### Step 2: Upload the file content
+
+The client sends the file to `upload_url` using `upload_method`, including any `upload_headers` and `upload_fields`.
+
+For **filesystem** backends, this is a multipart POST to datasette-files:
+
+```
+POST /-/files/upload/local-uploads/content
+Content-Type: multipart/form-data
+
+upload_token=tok_01j5a3b4c5d6e7f8g9h0jkmnpq
+file=(binary data)
+```
+
+The `/content` endpoint validates the token, receives the bytes via `storage.receive_upload()`, and returns a simple acknowledgment:
+
+```json
+{"ok": true}
+```
+
+For **S3** backends, this is a direct POST/PUT to the presigned S3 URL. The client includes the signed fields as form data alongside the file. S3 returns its own response (HTTP 204 on success).
+
+#### Step 3: Complete
 
 ```
 POST /-/files/upload/{source_slug}/complete
@@ -166,13 +164,13 @@ POST /-/files/upload/{source_slug}/complete
   "ok": true,
   "file": {
     "id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
-    "filename": "large-video.mp4",
-    "content_type": "video/mp4",
-    "content_hash": null,
-    "size": 524288000,
+    "filename": "report.pdf",
+    "content_type": "application/pdf",
+    "content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb924...",
+    "size": 245678,
     "width": null,
     "height": null,
-    "source_slug": "product-images",
+    "source_slug": "local-uploads",
     "uploaded_by": "alice",
     "created_at": "2026-03-13T14:30:00",
     "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq",
@@ -181,28 +179,23 @@ POST /-/files/upload/{source_slug}/complete
 }
 ```
 
-On completion, datasette-files verifies the file exists in the backend (via `get_file_metadata`), registers it in the `datasette_files` table, and returns the full file record.
+On completion, datasette-files:
+1. Validates the upload token (not expired, not already used).
+2. Verifies the file exists in the backend (via `get_file_metadata` on the expected path).
+3. Assigns the permanent `df-{ULID}` file ID.
+4. Inserts the record into `datasette_files`.
+5. Returns the full file record.
 
 **Errors:**
-- `400` — Invalid or expired upload token, or file not found at the expected path.
+- `400` — Invalid, expired, or already-used upload token. Or the file was not found at the expected storage path.
 - `403` — Missing `files-upload` permission.
 
-#### How clients discover which flow to use
+#### Why one flow for all backends?
 
-The `/-/files/sources.json` endpoint reports each source's capabilities. Clients check:
-
-- If `requires_proxy_download` is `true` → use **Flow A** (proxy upload via `POST /-/files/upload/{source_slug}`)
-- If `can_generate_signed_urls` is `true` → use **Flow B** (prepare/complete)
-
-The `<file-upload>` web component handles this automatically. API clients can inspect `sources.json` to choose the right flow. Both flows return the same `{ok, file}` response shape on success.
-
-#### Why two-phase instead of a single signed URL?
-
-A single endpoint that returns "upload here, then I'll figure it out" has a gap: datasette-files doesn't know when the client-side upload finishes. The explicit `complete` call lets datasette-files:
-1. Verify the file actually landed in the backend
-2. Record accurate metadata (the backend may compute `content_hash`, `size`, etc.)
-3. Assign the permanent `df-{ULID}` file ID atomically
-4. Return the file record to the client in the same request
+- **Clients are simpler.** Every client implements the same prepare → upload → complete sequence. No branching logic based on backend type.
+- **The web component is simpler.** `<file-upload>` always does the same three steps. The only variable is the URL it sends bytes to, which the server tells it.
+- **It's honest about what filesystem upload actually is.** Even for local files, the server does real work during prepare (generating a path, allocating a token) and during complete (registering metadata, assigning the ID). The extra round-trips are cheap for local uploads.
+- **Future backends just work.** A new storage plugin only needs to implement `prepare_upload()` to return the right URL and fields. The client code doesn't change.
 
 ---
 
@@ -456,10 +449,16 @@ GET /-/files/sources.json
 ### 8. Delete a File
 
 ```
-DELETE /-/files/{file_id}
+POST /-/files/{file_id}/-/delete
 ```
 
 **Permission:** `files-delete` on the file's source.
+
+**Request:**
+
+```json
+{}
+```
 
 **Response (200):**
 
@@ -492,7 +491,7 @@ DELETE /-/files/{file_id}
 ### 9. Update File Metadata
 
 ```
-PATCH /-/files/{file_id}.json
+POST /-/files/{file_id}/-/update
 ```
 
 **Permission:** `files-edit` on the file's source.
@@ -501,7 +500,9 @@ PATCH /-/files/{file_id}.json
 
 ```json
 {
-  "search_text": "Updated description or extracted text content"
+  "update": {
+    "search_text": "Updated description or extracted text content"
+  }
 }
 ```
 
@@ -522,11 +523,12 @@ PATCH /-/files/{file_id}.json
 **Notes:**
 - Only `search_text` is editable for now. The current implementation handles this via a form POST on the HTML file info page. This endpoint provides a JSON equivalent.
 - Could be extended in the future to allow editing `metadata` (the JSON field) without changing the API shape.
+- The `update` key follows the same pattern as Datasette's `POST /<db>/<table>/<pk>/-/update` endpoint.
 
 **Errors:**
 - `404` — File not found.
 - `403` — Missing `files-edit` permission.
-- `400` — No valid fields provided.
+- `400` — No valid fields in `update`.
 
 ---
 
@@ -534,15 +536,16 @@ PATCH /-/files/{file_id}.json
 
 | Area | Current | Proposed |
 |------|---------|----------|
+| Upload flow | Single POST with multipart, returns file record immediately | Unified three-step prepare → upload → complete for all backends |
 | Response wrapper | Mixed — some return raw data, upload returns flat `{file_id, ...}` | All responses wrapped in `{ok: true, ...}` |
 | Upload response | `{file_id, filename, content_type, size, url}` | `{ok, file: {id, filename, content_type, content_hash, size, source_slug, download_url, ...}}` |
 | File metadata response | `dict(row)` (raw DB columns) | Curated `{ok, file: {...}}` with `download_url` |
 | Batch response | `{files: {...}}` | `{ok: true, files: {...}}` |
 | Search response | `{q, source, files, sources}` | `{ok: true, q, source, files, sources}` |
 | Source file listing | HTML only | Add `.json` variant with pagination metadata |
-| Delete | Not implemented | `DELETE /-/files/{file_id}` |
-| Metadata update | HTML form POST only | `PATCH /-/files/{file_id}.json` |
-| Error format | Inconsistent | All errors: `{ok: false, error: "..."}` |
+| Delete | Not implemented | `POST /-/files/{file_id}/-/delete` |
+| Metadata update | HTML form POST only | `POST /-/files/{file_id}/-/update` |
+| Error format | Inconsistent | All errors: `{ok: false, errors: [...]}` |
 
 ## Design Decisions
 
@@ -558,10 +561,10 @@ Search results are capped at 50 rows, which covers the vast majority of use case
 
 The batch endpoint exists to power `render_cell` — it fetches metadata for every `df-...` ID visible on a table page. Some files may belong to sources the user can't access. Returning errors for those would complicate the client unnecessarily. Silent omission means the client just doesn't render a rich preview for inaccessible files.
 
-### Why no file content update (PUT)?
+### Why POST-only for writes?
+
+Matches Datasette's write API convention. Datasette uses `POST /<db>/<table>/<pk>/-/delete` and `POST /<db>/<table>/<pk>/-/update` rather than `DELETE` and `PATCH` verbs. This keeps the API consistent and avoids issues with proxies and clients that don't support all HTTP methods.
+
+### Why no file content update?
 
 Files are immutable by design (per DESIGN.md). Immutability simplifies caching (`ETag` = file ID), avoids versioning complexity, and means `content_hash` is stable. To "update" a file, upload a new one and update the reference.
-
-### Why PATCH for metadata instead of PUT?
-
-`PATCH` signals partial update — only the provided fields are changed. This avoids requiring the client to send the full file metadata object. `PUT` would imply replacing the entire resource, which doesn't make sense for a partial metadata edit.
