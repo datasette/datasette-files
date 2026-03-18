@@ -63,6 +63,7 @@ class DatasetteFileUpload extends HTMLElement {
     this._source = this.getAttribute('source');
     this._files = []; // {file, status, progress, error, fileId}
     this._uploading = false;
+    this._thumbUrls = new WeakMap(); // file -> cached object URL
     this._render();
   }
 
@@ -255,7 +256,10 @@ class DatasetteFileUpload extends HTMLElement {
       const isImage = entry.file.type && entry.file.type.startsWith('image/');
       if (isImage) {
         const img = document.createElement('img');
-        img.src = URL.createObjectURL(entry.file);
+        if (!this._thumbUrls.has(entry.file)) {
+          this._thumbUrls.set(entry.file, URL.createObjectURL(entry.file));
+        }
+        img.src = this._thumbUrls.get(entry.file);
         img.alt = entry.file.name;
         iconDiv.appendChild(img);
       } else {
