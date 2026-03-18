@@ -1220,10 +1220,12 @@ async def import_progress_view(request, datasette):
 
 @hookimpl
 def file_actions(datasette, actor, file, preview_bytes):
-    """Suggest CSV import for files that look like CSV."""
+    """Suggest CSV/TSV import for files that look like CSV or TSV."""
     filename = file.get("filename", "")
     content_type = file.get("content_type", "")
-    if content_type == "text/csv" or filename.endswith(".csv"):
+    if content_type in ("text/csv", "text/tab-separated-values") or filename.endswith(
+        (".csv", ".tsv")
+    ):
         return [
             {
                 "href": f"/-/files/import/{file['id']}",

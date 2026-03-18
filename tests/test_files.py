@@ -1707,6 +1707,27 @@ async def test_csv_file_actions_suggests_import(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_tsv_file_actions_suggests_import(upload_dir):
+    """The built-in file_actions hook suggests importing TSV files as tables."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(
+        ds,
+        filename="data.tsv",
+        content=b"name\tage\nAlice\t30\nBob\t25\n",
+        content_type="text/tab-separated-values",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}")
+    assert response.status_code == 200
+    assert "Import as table" in response.text
+    assert f"/-/files/import/{file_id}" in response.text
+
+
+@pytest.mark.asyncio
 async def test_csv_file_actions_not_for_non_csv(upload_dir):
     """The built-in file_actions hook does NOT suggest import for non-CSV files."""
     ds = _make_datasette(
