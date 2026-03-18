@@ -159,7 +159,7 @@ GET /-/files/sources.json
 
 ### Table cell integration
 
-`datasette-files` uses Datasette's `column_types` system to decide which columns should be treated as files. It does not guess based on `df-...` values alone: a column only gets rich file rendering if you explicitly assign it the `file` column type.
+`datasette-files` uses Datasette's [column_types system](https://docs.datasette.io/en/latest/configuration.html#column-types) to decide which columns should be treated as files.
 
 Columns assigned the `file` column type will render `df-...` file IDs as rich file references in Datasette's table and row views. The plugin registers a `file` column type and uses that assignment to replace matching values with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail for images.
 
@@ -178,7 +178,7 @@ You can also assign it at runtime using Datasette 1.0a26+'s column type UI: open
 
 Once a column is assigned the `file` type, store a `df-...` ID returned from the upload endpoint in that column and it will render as a file link automatically. If the column is not assigned the `file` type, Datasette will show the raw `df-...` text instead.
 
-## API reference
+## Endpoint reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
