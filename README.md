@@ -18,9 +18,11 @@ datasette install datasette-files
 
 datasette-files manages files through **sources** — named connections to storage backends. Each source has a slug, a storage type, and backend-specific configuration.
 
+The default `filesystem` source stores files in a directory on disk. You can install additional plugins to add support for extra sources such as [datasette-files-s3](https://github.com/datasette/datasette-files-s3).
+
 ### Configuring sources
 
-Define sources in your `datasette.yaml` (or `metadata.yaml`) under the `datasette-files` plugin config:
+Define sources in your `datasette.yaml` under the `datasette-files` plugin config:
 
 ```yaml
 plugins:
@@ -158,7 +160,7 @@ Returns the registered file:
 }
 ```
 
-File IDs use the format `df-{ULID}` — the `df-` prefix makes them instantly recognizable when stored in database columns.
+File IDs use the format `df-{ULID}` — the `df-` prefix makes them recognizable when stored in database columns.
 
 The legacy single-step upload endpoint (`POST /-/files/upload/{source_slug}` with multipart form data) is still supported for backwards compatibility.
 
@@ -218,11 +220,26 @@ GET /-/files/sources.json
 
 ### Table cell integration
 
-Any database column containing a `df-...` file ID will automatically render as a rich file reference in Datasette's table views. The `render_cell` hook detects file IDs and replaces them with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail for images.
+`datasette-files` uses Datasette's [column_types system](https://docs.datasette.io/en/latest/configuration.html#column-types) to decide which columns should be treated as files.
 
-This works for any text column — store a `df-...` ID returned from the upload endpoint in a column and it will render as a file link automatically.
+Columns assigned the `file` column type will render `df-...` file IDs as rich file references in Datasette's table and row views. The plugin registers a `file` column type and uses that assignment to replace matching values with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail for images.
 
-## API reference
+The `file` column type is intended for `TEXT` columns. You can assign it in `datasette.yaml` like this:
+
+```yaml
+databases:
+  mydb:
+    tables:
+      mytable:
+        column_types:
+          attachment: file
+```
+
+You can also assign it at runtime using Datasette 1.0a26+'s column type UI: open the table page, use the `Column actions` menu for that column, then choose the `file` type. This requires the `set-column-type` permission.
+
+Once a column is assigned the `file` type, store a `df-...` ID returned from the upload endpoint in that column and it will render as a file link automatically. If the column is not assigned the `file` type, Datasette will show the raw `df-...` text instead.
+
+## Endpoint reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -243,7 +260,8 @@ This works for any text column — store a `df-...` ID returned from the upload 
 | `GET` | `/-/files/{file_id}/download` | Download file content |
 | `GET` | `/-/files/import/{file_id}` | CSV import preview page |
 | `POST` | `/-/files/import/{file_id}` | Start CSV import job |
-| `GET` | `/-/files/import/{file_id}/progress` | Import progress (HTML or JSON) |
+| `GET` | `/-/files/import/{file_id}/{import_id}` | Import progress page (HTML) |
+| `GET` | `/-/files/import/{file_id}/{import_id}.json` | Import progress (JSON) |
 
 ## Plugin hook: `file_actions`
 
@@ -619,4 +637,3 @@ Recommendation to run a test server:
 ```bash
 ./dev-server.sh
 ```
-

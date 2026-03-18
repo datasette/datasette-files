@@ -2,6 +2,7 @@ import json
 import re
 import time
 from datasette import hookimpl, Response, NotFound, Forbidden
+from datasette.column_types import ColumnType, SQLiteType
 from datasette.permissions import Action, PermissionSQL, Resource
 from datasette.plugins import pm
 from datasette.utils import await_me_maybe
@@ -103,6 +104,15 @@ END;
 """
 
 
+class FileColumnType(ColumnType):
+    name = "file"
+    description = "Link to a file"
+    sqlite_types = (SQLiteType.TEXT,)
+
+    async def render_cell(self, value, column, table, database, datasette, request):
+        return _render_file_cell(value, column, table)
+
+
 # --- Resource and Action definitions ---
 
 
@@ -116,7 +126,7 @@ class FileSourceResource(Resource):
         super().__init__(parent=source_slug, child=None)
 
     @classmethod
-    async def resources_sql(cls, datasette) -> str:
+    async def resources_sql(cls, datasette, actor) -> str:
         return "SELECT slug AS parent, NULL AS child FROM datasette_files_sources"
 
 
@@ -148,6 +158,11 @@ def register_actions():
             resource_class=FileSourceResource,
         ),
     ]
+
+
+@hookimpl
+def register_column_types(datasette):
+    return [FileColumnType]
 
 
 @hookimpl(specname="permission_resources_sql")
@@ -1246,8 +1261,7 @@ def register_routes():
     ]
 
 
-@hookimpl
-def render_cell(value, column, table, database, datasette, request):
+def _render_file_cell(value, column, table):
     if not isinstance(value, str) or not _FILE_ID_RE.match(value):
         return None
     col_attr = (
@@ -1285,11 +1299,18 @@ async def extra_body_script(
         resource=TableResource(database=database, table=table),
         actor=request.actor,
     )
+    column_types = await datasette.get_column_types(database, table)
+    file_columns = [
+        column_name
+        for column_name, column_type in column_types.items()
+        if column_type.name == FileColumnType.name
+    ]
     return "window.__datasette_files = {};".format(
         json.dumps(
             {
                 "canUpdate": can_update,
                 "database": database,
+                "fileColumns": file_columns,
                 "table": table,
             }
         )
@@ -1595,10 +1616,12 @@ async def import_progress_view(request, datasette):
 
 @hookimpl
 def file_actions(datasette, actor, file, preview_bytes):
-    """Suggest CSV import for files that look like CSV."""
+    """Suggest CSV/TSV import for files that look like CSV or TSV."""
     filename = file.get("filename", "")
     content_type = file.get("content_type", "")
-    if content_type == "text/csv" or filename.endswith(".csv"):
+    if content_type in ("text/csv", "text/tab-separated-values") or filename.endswith(
+        (".csv", ".tsv")
+    ):
         return [
             {
                 "href": f"/-/files/import/{file['id']}",

@@ -3,8 +3,14 @@ import pytest
 import json
 import tempfile
 import os
+import sqlite3
 
 from conftest import _upload_file, _make_datasette
+
+def _create_sqlite_database(path):
+    """Create an empty SQLite database file so Datasette can open it on startup."""
+    conn = sqlite3.connect(path)
+    conn.close()
 
 
 # --- Plugin installation ---
@@ -17,6 +23,13 @@ async def test_plugin_is_installed():
     assert response.status_code == 200
     installed_plugins = {p["name"] for p in response.json()}
     assert "datasette-files" in installed_plugins
+
+
+@pytest.mark.asyncio
+async def test_file_column_type_is_registered():
+    datasette = Datasette(memory=True)
+    await datasette.invoke_startup()
+    assert "file" in datasette._column_types
 
 
 # --- Base classes ---
@@ -1201,14 +1214,14 @@ async def test_edit_search_text_non_editor_denied(tmp_path):
 
 @pytest.mark.asyncio
 async def test_render_cell_includes_data_column(datasette_browse_allowed, upload_dir):
-    """render_cell output includes data-column attribute when table context is present."""
+    """FileColumnType.render_cell includes data-column when table context is present."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
 
-    from datasette_files import render_cell
+    from datasette_files import FileColumnType
 
-    result = render_cell(
+    result = await FileColumnType().render_cell(
         value=file_id,
         column="document",
         table="projects",
@@ -1225,14 +1238,14 @@ async def test_render_cell_includes_data_column(datasette_browse_allowed, upload
 async def test_render_cell_no_data_column_without_table(
     datasette_browse_allowed, upload_dir
 ):
-    """render_cell output omits data-column when table is None (e.g. SQL views)."""
+    """FileColumnType.render_cell omits data-column when table is None."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
 
-    from datasette_files import render_cell
+    from datasette_files import FileColumnType
 
-    result = render_cell(
+    result = await FileColumnType().render_cell(
         value=file_id,
         column="document",
         table=None,
@@ -1246,12 +1259,12 @@ async def test_render_cell_no_data_column_without_table(
 
 @pytest.mark.asyncio
 async def test_render_cell_no_match_for_non_file_id(datasette_browse_allowed):
-    """render_cell returns None for values that don't match the file ID pattern."""
+    """FileColumnType.render_cell returns None for non-file values."""
     ds = datasette_browse_allowed
 
-    from datasette_files import render_cell
+    from datasette_files import FileColumnType
 
-    result = render_cell(
+    result = await FileColumnType().render_cell(
         value="not-a-file-id",
         column="name",
         table="projects",
@@ -1264,14 +1277,14 @@ async def test_render_cell_no_match_for_non_file_id(datasette_browse_allowed):
 
 @pytest.mark.asyncio
 async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_dir):
-    """render_cell escapes column names to prevent XSS."""
+    """FileColumnType.render_cell escapes column names to prevent XSS."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
 
-    from datasette_files import render_cell
+    from datasette_files import FileColumnType
 
-    result = render_cell(
+    result = await FileColumnType().render_cell(
         value=file_id,
         column='"><script>alert(1)</script>',
         table="projects",
@@ -1282,6 +1295,59 @@ async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_
     assert result is not None
     assert "<script>" not in result
     assert "&lt;script&gt;" in result or "&#" in result
+
+
+@pytest.mark.asyncio
+async def test_table_page_only_renders_file_typed_columns(tmp_path):
+    """Only columns assigned the file column type render datasette-file components."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+                "files-upload": True,
+            },
+            "databases": {
+                "test": {
+                    "tables": {
+                        "projects": {
+                            "column_types": {
+                                "logo": "file",
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, logo TEXT, note TEXT)"
+    )
+    data = await _upload_file(ds, source="test-src", filename="logo.txt")
+    file_id = data["file_id"]
+    await db.execute_write(
+        "INSERT INTO projects (id, logo, note) VALUES (?, ?, ?)",
+        [1, file_id, file_id],
+    )
+
+    response = await ds.client.get("/test/projects")
+    assert response.status_code == 200
+    assert response.text.count(f'file-id="{file_id}"') == 1
+    assert f">{file_id}</td>" in response.text
 
 
 # --- extra_body_script ---
@@ -1323,7 +1389,53 @@ async def test_extra_body_script_on_table_page(tmp_path):
     # Anonymous user cannot update rows by default
     assert '"canUpdate": false' in response.text
     assert '"database": "test"' in response.text
+    assert '"fileColumns": []' in response.text
     assert '"table": "projects"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_extra_body_script_includes_file_columns(tmp_path):
+    """extra_body_script includes typed file columns for table-page enhancement."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+            },
+            "databases": {
+                "test": {
+                    "tables": {
+                        "projects": {
+                            "column_types": {
+                                "logo": "file",
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
+    )
+
+    response = await ds.client.get("/test/projects")
+    assert response.status_code == 200
+    assert '"fileColumns": ["logo"]' in response.text
 
 
 @pytest.mark.asyncio
@@ -1608,6 +1720,27 @@ async def test_csv_file_actions_suggests_import(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_tsv_file_actions_suggests_import(upload_dir):
+    """The built-in file_actions hook suggests importing TSV files as tables."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(
+        ds,
+        filename="data.tsv",
+        content=b"name\tage\nAlice\t30\nBob\t25\n",
+        content_type="text/tab-separated-values",
+    )
+    file_id = result["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}")
+    assert response.status_code == 200
+    assert "Import as table" in response.text
+    assert f"/-/files/import/{file_id}" in response.text
+
+
+@pytest.mark.asyncio
 async def test_csv_file_actions_not_for_non_csv(upload_dir):
     """The built-in file_actions hook does NOT suggest import for non-CSV files."""
     ds = _make_datasette(
@@ -1677,9 +1810,11 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
+    db_path = str(tmp_path / "data.db")
+    _create_sqlite_database(db_path)
 
     ds = Datasette(
-        [str(tmp_path / "data.db")],
+        [db_path],
         config={
             "plugins": {
                 "datasette-files": {
@@ -1757,9 +1892,11 @@ async def test_import_csv_with_empty_rows(tmp_path):
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
+    db_path = str(tmp_path / "data.db")
+    _create_sqlite_database(db_path)
 
     ds = Datasette(
-        [str(tmp_path / "data.db")],
+        [db_path],
         config={
             "plugins": {
                 "datasette-files": {
@@ -1818,9 +1955,11 @@ async def test_import_progress_json(tmp_path):
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
+    db_path = str(tmp_path / "data.db")
+    _create_sqlite_database(db_path)
 
     ds = Datasette(
-        [str(tmp_path / "data.db")],
+        [db_path],
         config={
             "plugins": {
                 "datasette-files": {
@@ -1880,9 +2019,11 @@ async def test_import_progress_page(tmp_path):
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
+    db_path = str(tmp_path / "data.db")
+    _create_sqlite_database(db_path)
 
     ds = Datasette(
-        [str(tmp_path / "data.db")],
+        [db_path],
         config={
             "plugins": {
                 "datasette-files": {
