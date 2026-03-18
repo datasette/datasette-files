@@ -156,9 +156,20 @@ GET /-/files/sources.json
 
 ### Table cell integration
 
-Any database column containing a `df-...` file ID will automatically render as a rich file reference in Datasette's table views. The `render_cell` hook detects file IDs and replaces them with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail for images.
+Columns assigned the `file` column type will render `df-...` file IDs as rich file references in Datasette's table views. The plugin registers a `file` column type and the `render_cell` hook uses that assignment to replace matching values with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail for images.
 
-This works for any text column — store a `df-...` ID returned from the upload endpoint in a column and it will render as a file link automatically.
+The `file` column type is intended for `TEXT` columns. Configure it in `datasette.yaml` like this:
+
+```yaml
+databases:
+  mydb:
+    tables:
+      mytable:
+        column_types:
+          attachment: file
+```
+
+Once assigned, store a `df-...` ID returned from the upload endpoint in that column and it will render as a file link automatically.
 
 ## API reference
 
@@ -552,4 +563,3 @@ Recommendation to run a test server:
 ```bash
 ./dev-server.sh
 ```
-

@@ -281,9 +281,20 @@ customElements.define("datasette-file", DatasetteFile);
 
 let _emptyEnhanced = false;
 
+function _fileColumnIndices(table, fileColumns) {
+  const indices = [];
+  const headers = Array.from(table.querySelectorAll("thead th"));
+  headers.forEach((th, idx) => {
+    const column = th.dataset.column;
+    if (column && fileColumns.includes(column)) {
+      indices.push({ index: idx, column });
+    }
+  });
+  return indices;
+}
+
 function _enhanceEmptyFileCells() {
   if (_emptyEnhanced) return;
-  _emptyEnhanced = true;
 
   const ctx = window.__datasette_files;
   if (!ctx || !ctx.canUpdate) return;
@@ -291,31 +302,23 @@ function _enhanceEmptyFileCells() {
   const table = document.querySelector("table.rows-and-columns");
   if (!table) return;
 
-  // Find column indices that contain file cells
-  const fileColIndices = new Set();
-  const fileColNames = {};
-  table.querySelectorAll("td datasette-file[data-column]").forEach((el) => {
-    const td = el.closest("td");
-    const tr = td.closest("tr");
-    const idx = Array.from(tr.children).indexOf(td);
-    fileColIndices.add(idx);
-    fileColNames[idx] = el.getAttribute("data-column");
-  });
+  const fileColumns = Array.isArray(ctx.fileColumns) ? ctx.fileColumns : [];
+  const fileColumnIndices = _fileColumnIndices(table, fileColumns);
+  if (fileColumnIndices.length === 0) return;
 
-  if (fileColIndices.size === 0) return;
+  _emptyEnhanced = true;
 
   // For each empty cell in a file column, inject an attach button
   table.querySelectorAll("tbody tr").forEach((row) => {
-    fileColIndices.forEach((idx) => {
-      const td = row.children[idx];
+    fileColumnIndices.forEach(({ index, column }) => {
+      const td = row.children[index];
       if (!td) return;
       if (td.querySelector("datasette-file")) return;
+      if (td.querySelector(".datasette-file-attach")) return;
       if (td.textContent.trim() !== "" && td.textContent.trim() !== "\u00a0") return;
 
-      const column = fileColNames[idx];
-      if (!column) return;
-
       const btn = document.createElement("a");
+      btn.className = "datasette-file-attach";
       btn.href = "#";
       btn.textContent = "+";
       btn.title = "Attach file";
@@ -341,4 +344,10 @@ function _enhanceEmptyFileCells() {
       td.appendChild(btn);
     });
   });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", _enhanceEmptyFileCells);
+} else {
+  _enhanceEmptyFileCells();
 }
