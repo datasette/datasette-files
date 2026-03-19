@@ -425,7 +425,7 @@ export function openFilePicker({ column, currentFileId }) {
 
         const uploadResp = await fetch(prepData.upload_url, {
           method: "POST",
-          headers: { "x-csrftoken": csrfToken },
+          headers: prepData.upload_headers || {},
           body: formData,
         });
         if (!uploadResp.ok) {

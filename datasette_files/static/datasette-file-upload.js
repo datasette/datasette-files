@@ -58,6 +58,12 @@ function _getCsrfToken() {
   return match ? match[1] : '';
 }
 
+function _setXhrHeaders(xhr, headers) {
+  for (const [key, value] of Object.entries(headers || {})) {
+    xhr.setRequestHeader(key, value);
+  }
+}
+
 class DatasetteFileUpload extends HTMLElement {
   connectedCallback() {
     this._source = this.getAttribute('source');
@@ -379,7 +385,7 @@ class DatasetteFileUpload extends HTMLElement {
         await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open('POST', prepData.upload_url);
-          xhr.setRequestHeader('x-csrftoken', csrfToken);
+          _setXhrHeaders(xhr, prepData.upload_headers);
 
           xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
