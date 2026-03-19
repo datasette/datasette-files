@@ -404,6 +404,10 @@ def _clean_expired_tokens():
         del _upload_tokens[t]
 
 
+def _error(message, status=400):
+    return Response.json({"ok": False, "errors": [message]}, status=status)
+
+
 async def _check_upload_permission_json(datasette, request, source_slug):
     """Check files-upload permission, return error Response or None."""
     allowed = await datasette.allowed(
@@ -412,7 +416,7 @@ async def _check_upload_permission_json(datasette, request, source_slug):
         actor=request.actor,
     )
     if not allowed:
-        return Response.json({"ok": False, "errors": ["Permission denied"]}, status=403)
+        return _error("Permission denied", status=403)
     return None
 
 
@@ -429,13 +433,11 @@ async def upload_prepare(request, datasette):
     try:
         body = json.loads(await request.post_body())
     except (json.JSONDecodeError, ValueError):
-        return Response.json({"ok": False, "errors": ["Invalid JSON"]}, status=400)
+        return _error("Invalid JSON")
 
     filename = body.get("filename")
     if not filename:
-        return Response.json(
-            {"ok": False, "errors": ["filename is required"]}, status=400
-        )
+        return _error("filename is required")
 
     content_type = body.get("content_type", "application/octet-stream")
     size = body.get("size")
@@ -481,7 +483,7 @@ async def upload_prepare(request, datasette):
 
 
 async def upload_content(request, datasette):
-    """POST /-/files/upload/{source_slug}/-/upload - receive file bytes (filesystem proxy)."""
+    """POST /-/files/upload/{source_slug}/-/upload - receive file bytes"""
     source_slug = request.url_vars["source_slug"]
     if source_slug not in _sources:
         raise NotFound(f"Source not found: {source_slug}")
@@ -490,60 +492,46 @@ async def upload_content(request, datasette):
 
     # Parse multipart form
     form = await request.form(files=True)
+    try:
+        token_value = form.get("upload_token")
+        if not token_value or (hasattr(token_value, "read") and not token_value):
+            # Try string value
+            pass
+        if hasattr(token_value, "read"):
+            token_value = None
 
-    token_value = form.get("upload_token")
-    if not token_value or (hasattr(token_value, "read") and not token_value):
-        # Try string value
-        pass
-    if hasattr(token_value, "read"):
-        token_value = None
+        if not token_value:
+            return _error("upload_token is required")
 
-    if not token_value:
+        token_data = _upload_tokens.get(token_value)
+        if not token_data:
+            return _error("Invalid or expired upload token")
+
+        if token_data["source_slug"] != source_slug:
+            return _error("Token does not match this source")
+
+        if token_data["content_received"]:
+            return _error("Content already uploaded for this token")
+
+        uploaded = form.get("file")
+        if uploaded is None or not hasattr(uploaded, "read"):
+            return _error("No file provided")
+
+        content = await uploaded.read()
+        content_type = token_data["content_type"]
+        path = token_data["path"]
+
+        # Store the file
+        file_meta = await storage.receive_upload(path, content, content_type)
+
+        # Save metadata on the token for the complete step
+        token_data["content_received"] = True
+        token_data["file_meta"] = file_meta
+        token_data["actual_size"] = len(content)
+
+        return Response.json({"ok": True})
+    finally:
         await form.aclose()
-        return Response.json(
-            {"ok": False, "errors": ["upload_token is required"]}, status=400
-        )
-
-    token_data = _upload_tokens.get(token_value)
-    if not token_data:
-        await form.aclose()
-        return Response.json(
-            {"ok": False, "errors": ["Invalid or expired upload token"]}, status=400
-        )
-
-    if token_data["source_slug"] != source_slug:
-        await form.aclose()
-        return Response.json(
-            {"ok": False, "errors": ["Token does not match this source"]}, status=400
-        )
-
-    if token_data["content_received"]:
-        await form.aclose()
-        return Response.json(
-            {"ok": False, "errors": ["Content already uploaded for this token"]},
-            status=400,
-        )
-
-    uploaded = form.get("file")
-    if uploaded is None or not hasattr(uploaded, "read"):
-        await form.aclose()
-        return Response.json({"ok": False, "errors": ["No file provided"]}, status=400)
-
-    content = await uploaded.read()
-    content_type = token_data["content_type"]
-    path = token_data["path"]
-
-    # Store the file
-    file_meta = await storage.receive_upload(path, content, content_type)
-
-    # Save metadata on the token for the complete step
-    token_data["content_received"] = True
-    token_data["file_meta"] = file_meta
-    token_data["actual_size"] = len(content)
-
-    await form.aclose()
-
-    return Response.json({"ok": True})
 
 
 async def upload_complete(request, datasette):
@@ -561,36 +549,24 @@ async def upload_complete(request, datasette):
     try:
         body = json.loads(await request.post_body())
     except (json.JSONDecodeError, ValueError):
-        return Response.json({"ok": False, "errors": ["Invalid JSON"]}, status=400)
+        return _error("Invalid JSON")
 
     token_value = body.get("upload_token")
     if not token_value:
-        return Response.json(
-            {"ok": False, "errors": ["upload_token is required"]}, status=400
-        )
+        return _error("upload_token is required")
 
     token_data = _upload_tokens.get(token_value)
     if not token_data:
-        return Response.json(
-            {"ok": False, "errors": ["Invalid or expired upload token"]}, status=400
-        )
+        return _error("Invalid or expired upload token")
 
     if token_data["source_slug"] != source_slug:
-        return Response.json(
-            {"ok": False, "errors": ["Token does not match this source"]}, status=400
-        )
+        return _error("Token does not match this source")
 
     if not token_data["content_received"]:
-        return Response.json(
-            {"ok": False, "errors": ["File content has not been uploaded yet"]},
-            status=400,
-        )
+        return _error("File content has not been uploaded yet")
 
     if token_data["used"]:
-        return Response.json(
-            {"ok": False, "errors": ["This upload token has already been used"]},
-            status=400,
-        )
+        return _error("This upload token has already been used")
 
     # Mark token as used
     token_data["used"] = True
@@ -675,10 +651,7 @@ async def file_delete(request, datasette):
     storage = _sources[source_slug]
 
     if not storage.capabilities.can_delete:
-        return Response.json(
-            {"ok": False, "errors": ["This storage backend does not support deletion"]},
-            status=400,
-        )
+        return _error("This storage backend does not support deletion")
 
     # Delete from storage backend
     await storage.delete_file(row["path"])
@@ -711,32 +684,22 @@ async def file_update(request, datasette):
     try:
         body = json.loads(await request.post_body())
     except (json.JSONDecodeError, ValueError):
-        return Response.json({"ok": False, "errors": ["Invalid JSON"]}, status=400)
+        return _error("Invalid JSON")
 
     update = body.get("update")
     if not update or not isinstance(update, dict):
-        return Response.json(
-            {"ok": False, "errors": ["update object is required"]}, status=400
-        )
+        return _error("update object is required")
 
     # Only allow editing search_text for now
     allowed_fields = {"search_text"}
     invalid_fields = set(update.keys()) - allowed_fields
     if invalid_fields:
-        return Response.json(
-            {
-                "ok": False,
-                "errors": [
-                    f"Cannot update fields: {', '.join(sorted(invalid_fields))}"
-                ],
-            },
-            status=400,
+        return _error(
+            f"Cannot update fields: {', '.join(sorted(invalid_fields))}"
         )
 
     if not update:
-        return Response.json(
-            {"ok": False, "errors": ["No valid fields to update"]}, status=400
-        )
+        return _error("No valid fields to update")
 
     db = datasette.get_internal_database()
     if "search_text" in update:
