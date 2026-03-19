@@ -27,7 +27,7 @@ curl -s http://localhost:8099/-/files/sources.json | python3 -m json.tool
 }
 ```
 
-Testing the three-step upload API flow: prepare, content, complete.
+Testing the three-step upload API flow: prepare, upload, complete.
 
 ```bash
 
@@ -39,9 +39,9 @@ echo "Prepare response:"
 echo "$PREP" | python3 -m json.tool
 TOKEN=$(echo "$PREP" | python3 -c "import sys,json; print(json.load(sys.stdin)[\"upload_token\"])")
 
-# Step 2: Upload content
+# Step 2: Upload
 echo -e "\nContent upload response:"
-curl -s -X POST http://localhost:8099/-/files/upload/dev-files/-/content \
+curl -s -X POST http://localhost:8099/-/files/upload/dev-files/-/upload \
   -F "upload_token=$TOKEN" \
   -F "file=@-;filename=test-doc.txt;type=text/plain" <<< "Hello, world!" | python3 -m json.tool
 
@@ -58,7 +58,7 @@ Prepare response:
 {
     "ok": true,
     "upload_token": "tok_01kkmr61cjhtem426zas4dmd3g",
-    "upload_url": "/-/files/upload/dev-files/-/content",
+    "upload_url": "/-/files/upload/dev-files/-/upload",
     "upload_method": "POST",
     "upload_headers": {},
     "upload_fields": {

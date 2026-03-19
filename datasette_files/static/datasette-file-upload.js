@@ -1,6 +1,6 @@
 // <datasette-file-upload> web component
 // Drag-and-drop multi-file upload area with progress bars.
-// Uses the prepare/content/complete API flow.
+// Uses the prepare/upload/complete API flow.
 
 const _FILE_ICON_STYLES = {
   CSV:  { badge: '#2E7D32', bg: '#EEF7EE', stroke: '#7AB87E', fold: '#C4E0C5' },
@@ -381,7 +381,7 @@ class DatasetteFileUpload extends HTMLElement {
         entry.progress = 20;
         this._renderFileList();
 
-        // Step 2: Upload content using XHR for progress tracking
+        // Step 2: Upload file bytes using XHR for progress tracking
         await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open('POST', prepData.upload_url);

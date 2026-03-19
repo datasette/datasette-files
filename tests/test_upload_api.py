@@ -101,7 +101,7 @@ async def test_prepare_invalid_source(datasette_all_permissions):
     assert response.status_code == 404
 
 
-# --- Content endpoint ---
+# --- Upload endpoint ---
 
 
 async def _prepare_upload(ds, filename="test.txt", content_type="text/plain", size=100):
@@ -124,7 +124,7 @@ async def test_content_upload(datasette_all_permissions):
     token = prep["upload_token"]
 
     response = await ds.client.post(
-        "/-/files/upload/test-uploads/-/content",
+        "/-/files/upload/test-uploads/-/upload",
         content=(
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="upload_token"\r\n'
@@ -146,7 +146,7 @@ async def test_content_upload(datasette_all_permissions):
 async def test_content_upload_invalid_token(datasette_all_permissions):
     ds = datasette_all_permissions
     response = await ds.client.post(
-        "/-/files/upload/test-uploads/-/content",
+        "/-/files/upload/test-uploads/-/upload",
         content=(
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="upload_token"\r\n'
@@ -173,9 +173,9 @@ async def test_complete_registers_file(datasette_all_permissions, upload_dir):
     prep = await _prepare_upload(ds, filename="hello.txt")
     token = prep["upload_token"]
 
-    # Upload content
+    # Upload file bytes
     await ds.client.post(
-        "/-/files/upload/test-uploads/-/content",
+        "/-/files/upload/test-uploads/-/upload",
         content=(
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="upload_token"\r\n'
@@ -215,7 +215,7 @@ async def test_complete_without_content_fails(datasette_all_permissions):
     prep = await _prepare_upload(ds)
     token = prep["upload_token"]
 
-    # Try to complete without uploading content
+    # Try to complete without uploading file bytes
     response = await ds.client.post(
         "/-/files/upload/test-uploads/-/complete",
         content=json.dumps({"upload_token": token}),
@@ -233,9 +233,9 @@ async def test_complete_double_use_fails(datasette_all_permissions):
     prep = await _prepare_upload(ds, filename="double.txt")
     token = prep["upload_token"]
 
-    # Upload content
+    # Upload file bytes
     await ds.client.post(
-        "/-/files/upload/test-uploads/-/content",
+        "/-/files/upload/test-uploads/-/upload",
         content=(
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="upload_token"\r\n'
@@ -268,7 +268,7 @@ async def test_complete_double_use_fails(datasette_all_permissions):
 
 @pytest.mark.asyncio
 async def test_full_upload_flow_file_on_disk(datasette_all_permissions, upload_dir):
-    """Full prepare -> content -> complete flow, verifying file lands on disk."""
+    """Full prepare -> upload -> complete flow, verifying file lands on disk."""
     ds = datasette_all_permissions
 
     file_content = b"This is a test PDF content"
@@ -277,7 +277,7 @@ async def test_full_upload_flow_file_on_disk(datasette_all_permissions, upload_d
     )
     token = prep["upload_token"]
 
-    # Upload content
+    # Upload file bytes
     await ds.client.post(
         prep["upload_url"],
         content=(

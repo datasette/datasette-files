@@ -518,8 +518,8 @@ async def upload_prepare(request, datasette):
         "actor": request.actor,
     }
 
-    # Build upload URL - for filesystem, it points to our content endpoint
-    upload_url = f"/-/files/upload/{source_slug}/-/content"
+    # Build upload URL - for filesystem, it points to our upload endpoint
+    upload_url = f"/-/files/upload/{source_slug}/-/upload"
 
     return Response.json(
         {
@@ -536,7 +536,7 @@ async def upload_prepare(request, datasette):
 
 
 async def upload_content(request, datasette):
-    """POST /-/files/upload/{source_slug}/-/content - receive file bytes (filesystem proxy)."""
+    """POST /-/files/upload/{source_slug}/-/upload - receive file bytes (filesystem proxy)."""
     source_slug = request.url_vars["source_slug"]
     if source_slug not in _sources:
         raise NotFound(f"Source not found: {source_slug}")
@@ -1237,9 +1237,9 @@ def register_routes():
         (r"^/-/files/search$", search_files),
         (r"^/-/files/batch\.json$", batch_json),
         (r"^/-/files/sources\.json$", sources_json),
-        # New unified upload API (prepare/content/complete)
+        # New unified upload API (prepare/upload/complete)
         (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/prepare$", upload_prepare),
-        (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/content$", upload_content),
+        (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/upload$", upload_content),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/complete$", upload_complete),
         # Legacy upload endpoint (still works)
         (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),

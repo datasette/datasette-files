@@ -379,7 +379,7 @@ export function openFilePicker({ column, currentFileId }) {
       }
     }
 
-    // Upload handler — uses prepare/content/complete API
+    // Upload handler — uses prepare/upload/complete API
     uploadBtn.addEventListener("click", async () => {
       const file = fileInput.files[0];
       if (!file) {
@@ -416,7 +416,7 @@ export function openFilePicker({ column, currentFileId }) {
         }
         const prepData = await prepResp.json();
 
-        // Step 2: Upload content
+        // Step 2: Upload file bytes
         const formData = new FormData();
         for (const [key, value] of Object.entries(prepData.upload_fields || {})) {
           formData.append(key, value);

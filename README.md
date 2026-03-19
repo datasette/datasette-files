@@ -107,7 +107,7 @@ The same upload component is shown on `/-/files/source/{source_slug}` when you h
 
 #### Upload API
 
-The upload UI and the file picker dialog both use a three-step flow: **prepare**, **upload content**, **complete**. For the built-in `filesystem` backend, step 2 uploads the file bytes to Datasette.
+The upload UI and the file picker dialog both use a three-step flow: **prepare**, **upload**, **complete**. For the built-in `filesystem` backend, step 2 uploads the file bytes to Datasette.
 
 **Step 1: Prepare**
 
@@ -123,17 +123,17 @@ Returns upload instructions:
 {
   "ok": true,
   "upload_token": "tok_01j5...",
-  "upload_url": "/-/files/upload/my-files/-/content",
+  "upload_url": "/-/files/upload/my-files/-/upload",
   "upload_method": "POST",
   "upload_headers": {},
   "upload_fields": {"upload_token": "tok_01j5..."}
 }
 ```
 
-**Step 2: Upload content** — send the file to the `upload_url` from step 1:
+**Step 2: Upload** — send the file to the `upload_url` from step 1:
 
 ```bash
-curl -X POST "http://localhost:8001/-/files/upload/my-files/-/content" \
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/upload" \
   -F "upload_token=tok_01j5..." \
   -F "file=@photo.jpg"
 ```
@@ -263,7 +263,7 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | `GET` | `/-/files/batch.json?id=df-...&id=df-...` | Bulk file metadata |
 | `GET` | `/-/files/upload/{source_slug}` | Dedicated upload page (HTML) |
 | `POST` | `/-/files/upload/{source_slug}/-/prepare` | Prepare upload (get instructions) |
-| `POST` | `/-/files/upload/{source_slug}/-/content` | Upload file content |
+| `POST` | `/-/files/upload/{source_slug}/-/upload` | Upload file content |
 | `POST` | `/-/files/upload/{source_slug}/-/complete` | Complete upload (register file) |
 | `POST` | `/-/files/upload/{source_slug}` | Legacy single-step upload (multipart) |
 | `POST` | `/-/files/{file_id}/-/delete` | Delete a file |

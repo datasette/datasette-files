@@ -80,7 +80,7 @@ For a **filesystem** backend, the upload URL points back to a datasette-files en
 {
   "ok": true,
   "upload_token": "tok_01j5a3b4c5d6e7f8g9h0jkmnpq",
-  "upload_url": "/-/files/upload/local-uploads/content",
+  "upload_url": "/-/files/upload/local-uploads/upload",
   "upload_method": "POST",
   "upload_headers": {},
   "upload_fields": {
@@ -126,7 +126,7 @@ The client sends the file to `upload_url` using `upload_method`, including any `
 For **filesystem** backends, this is a multipart POST to datasette-files:
 
 ```
-POST /-/files/upload/local-uploads/content
+POST /-/files/upload/local-uploads/upload
 Content-Type: multipart/form-data
 
 upload_token=tok_01j5a3b4c5d6e7f8g9h0jkmnpq
