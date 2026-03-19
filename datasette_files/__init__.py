@@ -129,7 +129,7 @@ class FileColumnType(ColumnType):
     sqlite_types = (SQLiteType.TEXT,)
 
     async def render_cell(self, value, column, table, database, datasette, request):
-        return _render_file_cell(value, column, table)
+        return _render_file_cell(datasette, value, column, table)
 
 
 # --- Resource and Action definitions ---
@@ -479,7 +479,7 @@ async def upload_prepare(request, datasette):
     )
 
     # Build upload URL - for filesystem, it points to our upload endpoint
-    upload_url = f"/-/files/upload/{source_slug}/-/upload"
+    upload_url = datasette.urls.path(f"/-/files/upload/{source_slug}/-/upload")
 
     return Response.json(
         {
@@ -646,8 +646,8 @@ async def upload_complete(request, datasette):
                 "source_slug": row["source_slug"],
                 "uploaded_by": row["uploaded_by"],
                 "created_at": row["created_at"],
-                "url": f"/-/files/{file_id}",
-                "download_url": f"/-/files/{file_id}/download",
+                "url": datasette.urls.path(f"/-/files/{file_id}"),
+                "download_url": datasette.urls.path(f"/-/files/{file_id}/download"),
             },
         },
         status=201,
@@ -925,8 +925,8 @@ async def batch_json(request, datasette):
             "size": row["size"],
             "width": row["width"],
             "height": row["height"],
-            "download_url": f"/-/files/{file_id}/download",
-            "info_url": f"/-/files/{file_id}",
+            "download_url": datasette.urls.path(f"/-/files/{file_id}/download"),
+            "info_url": datasette.urls.path(f"/-/files/{file_id}"),
         }
 
     return Response.json({"files": files})
@@ -1189,16 +1189,17 @@ def register_routes():
     ]
 
 
-def _render_file_cell(value, column, table):
+def _render_file_cell(datasette, value, column, table):
     if not isinstance(value, str) or not _FILE_ID_RE.match(value):
         return None
     col_attr = (
         ' data-column="{}"'.format(Markup.escape(column)) if table is not None else ""
     )
+    url = datasette.urls.path(f"/-/files/{value}")
     return Markup(
         '<datasette-file file-id="{v}"{col}>'
-        '<a href="/-/files/{v}">{v}</a>'
-        "</datasette-file>".format(v=value, col=col_attr)
+        '<a href="{url}">{v}</a>'
+        "</datasette-file>".format(v=value, col=col_attr, url=url)
     )
 
 
@@ -1482,7 +1483,7 @@ async def import_file_view(request, datasette):
         )
     )
 
-    return Response.redirect(f"/-/files/import/{file_id}/{import_id}")
+    return Response.redirect(datasette.urls.path(f"/-/files/import/{file_id}/{import_id}"))
 
 
 async def import_progress_view(request, datasette):
@@ -1552,7 +1553,7 @@ def file_actions(datasette, actor, file, preview_bytes):
     ):
         return [
             {
-                "href": f"/-/files/import/{file['id']}",
+                "href": datasette.urls.path(f"/-/files/import/{file['id']}"),
                 "label": "Import as table",
                 "description": "Import this CSV file as a database table",
             },
