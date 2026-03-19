@@ -490,8 +490,14 @@ async def upload_content(request, datasette):
 
     storage = _sources[source_slug]
 
-    # Parse multipart form
-    form = await request.form(files=True)
+    # Parse multipart form — use storage's max_file_size if configured,
+    # otherwise allow up to 2 GiB per file.
+    max_size = storage.capabilities.max_file_size or 2 * 1024 * 1024 * 1024
+    form = await request.form(
+        files=True,
+        max_file_size=max_size,
+        max_request_size=max_size + 1024 * 1024,  # file + form overhead
+    )
     try:
         token_value = form.get("upload_token")
         if not token_value or (hasattr(token_value, "read") and not token_value):
@@ -517,17 +523,25 @@ async def upload_content(request, datasette):
         if uploaded is None or not hasattr(uploaded, "read"):
             return _error("No file provided")
 
-        content = await uploaded.read()
         content_type = token_data["content_type"]
         path = token_data["path"]
 
-        # Store the file
-        file_meta = await storage.receive_upload(path, content, content_type)
+        # Stream file chunks to the storage backend
+        async def _upload_chunks(uploaded_file, chunk_size=65536):
+            while True:
+                chunk = await uploaded_file.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+
+        file_meta = await storage.receive_upload(
+            path, _upload_chunks(uploaded), content_type
+        )
 
         # Save metadata on the token for the complete step
         token_data["content_received"] = True
         token_data["file_meta"] = file_meta
-        token_data["actual_size"] = len(content)
+        token_data["actual_size"] = file_meta.size
 
         return Response.json({"ok": True})
     finally:

@@ -75,18 +75,24 @@ class FilesystemStorage(Storage):
         return files, None
 
     async def receive_upload(
-        self, path: str, content: bytes, content_type: str
+        self, path: str, stream, content_type: str
     ) -> FileMetadata:
         target = self.root / path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
+        sha256 = hashlib.sha256()
+        size = 0
+        with open(target, "wb") as f:
+            async for chunk in stream:
+                f.write(chunk)
+                sha256.update(chunk)
+                size += len(chunk)
+        content_hash = "sha256:" + sha256.hexdigest()
         return FileMetadata(
             path=path,
             filename=Path(path).name,
             content_type=content_type,
             content_hash=content_hash,
-            size=len(content),
+            size=size,
         )
 
     async def delete_file(self, path: str) -> None:

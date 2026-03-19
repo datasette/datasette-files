@@ -8,6 +8,10 @@ import sqlite3
 from conftest import _upload_file, _make_datasette
 
 
+async def _bytes_stream(data: bytes):
+    yield data
+
+
 def _create_sqlite_database(path):
     """Create an empty SQLite database file so Datasette can open it on startup."""
     conn = sqlite3.connect(path)
@@ -93,7 +97,7 @@ async def test_filesystem_storage_receive_and_read(upload_dir):
 
     metadata = await storage.receive_upload(
         path="abc123/hello.txt",
-        content=b"Hello, world!",
+        stream=_bytes_stream(b"Hello, world!"),
         content_type="text/plain",
     )
     assert metadata.filename == "hello.txt"
@@ -115,8 +119,8 @@ async def test_filesystem_storage_list_files(upload_dir):
     await storage.configure({"root": upload_dir}, get_secret=None)
 
     # Upload a file
-    await storage.receive_upload("a/file1.txt", b"one", "text/plain")
-    await storage.receive_upload("b/file2.txt", b"two", "text/plain")
+    await storage.receive_upload("a/file1.txt", _bytes_stream(b"one"), "text/plain")
+    await storage.receive_upload("b/file2.txt", _bytes_stream(b"two"), "text/plain")
 
     files, cursor = await storage.list_files()
     assert len(files) == 2
@@ -132,7 +136,7 @@ async def test_filesystem_storage_delete(upload_dir):
     storage = FilesystemStorage()
     await storage.configure({"root": upload_dir}, get_secret=None)
 
-    await storage.receive_upload("del/gone.txt", b"bye", "text/plain")
+    await storage.receive_upload("del/gone.txt", _bytes_stream(b"bye"), "text/plain")
     content = await storage.read_file("del/gone.txt")
     assert content == b"bye"
 

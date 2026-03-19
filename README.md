@@ -455,11 +455,17 @@ async def read_file(self, path: str) -> bytes:
 
 Override these based on the capabilities you declared:
 
-**`receive_upload(path, content, content_type)`** — Store file content. Return a `FileMetadata` with at least the `content_hash` and `size` populated. Required if `can_upload` is `True`.
+**`receive_upload(path, stream, content_type)`** — Store file content streamed as chunks. `stream` is an `AsyncIterator[bytes]` — consume it incrementally to avoid buffering the entire file in memory. Return a `FileMetadata` with at least the `content_hash` and `size` populated. Required if `can_upload` is `True`.
 
 ```python
-async def receive_upload(self, path: str, content: bytes, content_type: str) -> FileMetadata:
-    # Store the file and return metadata
+async def receive_upload(self, path: str, stream: AsyncIterator[bytes], content_type: str) -> FileMetadata:
+    # Consume stream chunks, store the file, and return metadata
+    sha256 = hashlib.sha256()
+    size = 0
+    async for chunk in stream:
+        # write chunk to storage
+        sha256.update(chunk)
+        size += len(chunk)
     ...
 ```
 
@@ -543,21 +549,29 @@ class S3Storage(Storage):
             yield chunk
 
     async def receive_upload(
-        self, path: str, content: bytes, content_type: str
+        self, path: str, stream, content_type: str
     ) -> FileMetadata:
+        # Collect chunks, computing hash incrementally
+        chunks = []
+        sha256 = hashlib.sha256()
+        size = 0
+        async for chunk in stream:
+            chunks.append(chunk)
+            sha256.update(chunk)
+            size += len(chunk)
+        content = b"".join(chunks)
         self.client.put_object(
             Bucket=self.bucket,
             Key=self._key(path),
             Body=content,
             ContentType=content_type,
         )
-        content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
         return FileMetadata(
             path=path,
             filename=path.split("/")[-1],
             content_type=content_type,
-            content_hash=content_hash,
-            size=len(content),
+            content_hash="sha256:" + sha256.hexdigest(),
+            size=size,
         )
 
     async def download_url(self, path: str, expires_in: int = 300) -> str:
