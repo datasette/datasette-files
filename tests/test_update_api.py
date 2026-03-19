@@ -1,4 +1,5 @@
 """Tests for POST /-/files/{file_id}/-/update endpoint."""
+
 from datasette.app import Datasette
 import pytest
 import json
@@ -85,7 +86,9 @@ async def test_update_nonexistent_file(datasette_all_permissions):
 async def test_update_search_text_appears_in_search(datasette_all_permissions):
     """Updated search_text should be findable via search."""
     ds = datasette_all_permissions
-    data = await _upload_file(ds, filename="invoice.pdf", content_type="application/pdf")
+    data = await _upload_file(
+        ds, filename="invoice.pdf", content_type="application/pdf"
+    )
     file_id = data["file_id"]
 
     # Update search text

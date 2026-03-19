@@ -450,7 +450,11 @@ async def upload_file(request, datasette):
 def _clean_expired_tokens():
     """Remove expired upload tokens."""
     now = time.time()
-    expired = [t for t, v in _upload_tokens.items() if now - v["created_at"] > _UPLOAD_TOKEN_TTL]
+    expired = [
+        t
+        for t, v in _upload_tokens.items()
+        if now - v["created_at"] > _UPLOAD_TOKEN_TTL
+    ]
     for t in expired:
         del _upload_tokens[t]
 
@@ -463,9 +467,7 @@ async def _check_upload_permission_json(datasette, request, source_slug):
         actor=request.actor,
     )
     if not allowed:
-        return Response.json(
-            {"ok": False, "errors": ["Permission denied"]}, status=403
-        )
+        return Response.json({"ok": False, "errors": ["Permission denied"]}, status=403)
     return None
 
 
@@ -519,16 +521,18 @@ async def upload_prepare(request, datasette):
     # Build upload URL - for filesystem, it points to our content endpoint
     upload_url = f"/-/files/upload/{source_slug}/-/content"
 
-    return Response.json({
-        "ok": True,
-        "upload_token": token,
-        "upload_url": upload_url,
-        "upload_method": "POST",
-        "upload_headers": {},
-        "upload_fields": {
+    return Response.json(
+        {
+            "ok": True,
             "upload_token": token,
-        },
-    })
+            "upload_url": upload_url,
+            "upload_method": "POST",
+            "upload_headers": {},
+            "upload_fields": {
+                "upload_token": token,
+            },
+        }
+    )
 
 
 async def upload_content(request, datasette):
@@ -578,9 +582,7 @@ async def upload_content(request, datasette):
     uploaded = form.get("file")
     if uploaded is None or not hasattr(uploaded, "read"):
         await form.aclose()
-        return Response.json(
-            {"ok": False, "errors": ["No file provided"]}, status=400
-        )
+        return Response.json({"ok": False, "errors": ["No file provided"]}, status=400)
 
     content = await uploaded.read()
     content_type = token_data["content_type"]
@@ -738,9 +740,7 @@ async def file_delete(request, datasette):
 
     # Delete from internal database
     db = datasette.get_internal_database()
-    await db.execute_write(
-        "DELETE FROM datasette_files WHERE id = ?", [file_id]
-    )
+    await db.execute_write("DELETE FROM datasette_files WHERE id = ?", [file_id])
 
     return Response.json({"ok": True})
 
@@ -781,7 +781,9 @@ async def file_update(request, datasette):
         return Response.json(
             {
                 "ok": False,
-                "errors": [f"Cannot update fields: {', '.join(sorted(invalid_fields))}"],
+                "errors": [
+                    f"Cannot update fields: {', '.join(sorted(invalid_fields))}"
+                ],
             },
             status=400,
         )

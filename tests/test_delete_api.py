@@ -1,4 +1,5 @@
 """Tests for POST /-/files/{file_id}/-/delete endpoint."""
+
 from datasette.app import Datasette
 import pytest
 import json

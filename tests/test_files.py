@@ -7,6 +7,7 @@ import sqlite3
 
 from conftest import _upload_file, _make_datasette
 
+
 def _create_sqlite_database(path):
     """Create an empty SQLite database file so Datasette can open it on startup."""
     conn = sqlite3.connect(path)
