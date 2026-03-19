@@ -110,9 +110,14 @@ class Storage(ABC):
         raise NotImplementedError(f"{self.__class__.__name__} does not support uploads")
 
     async def receive_upload(
-        self, path: str, content: bytes, content_type: str
+        self, path: str, stream: AsyncIterator[bytes], content_type: str
     ) -> FileMetadata:
-        """Receive and store file content (for proxy uploads)."""
+        """Receive and store file content streamed as chunks (for proxy uploads).
+
+        ``stream`` is an async iterator yielding ``bytes`` chunks.  Backends
+        should consume the iterator incrementally to avoid buffering the
+        entire file in memory.
+        """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support proxy uploads"
         )

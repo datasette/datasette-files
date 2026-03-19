@@ -12,3 +12,4 @@ dist
 build
 uv.lock
 dev-files
+internal.db

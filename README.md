@@ -101,27 +101,96 @@ permissions:
 
 ### Uploading files
 
-Upload a file by sending a `POST` request with multipart form data to `/-/files/upload/{source_slug}`:
+Visit `/-/files/upload/{source_slug}` for a dedicated drag-and-drop upload page. It supports multiple files, per-file progress bars, and SVG file-type previews.
+
+The same upload component is shown on `/-/files/source/{source_slug}` when you have `files-upload` permission for that source.
+
+#### Upload API
+
+The upload UI and the file picker dialog both use a three-step flow: **prepare**, **upload**, **complete**. For the built-in `filesystem` backend, step 2 uploads the file bytes to Datasette.
+
+**Step 1: Prepare**
 
 ```bash
-curl -X POST "http://localhost:8001/-/files/upload/my-files" \
-  -H "Authorization: Bearer dstok_..." \
-  -F "file=@photo.jpg"
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/prepare" \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "photo.jpg", "content_type": "image/jpeg", "size": 48210}'
 ```
 
-The response includes the file's unique ID and metadata:
+Returns upload instructions:
 
 ```json
 {
-  "file_id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
-  "filename": "photo.jpg",
-  "content_type": "image/jpeg",
-  "size": 48210,
-  "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq"
+  "ok": true,
+  "upload_token": "tok_01j5...",
+  "upload_url": "/-/files/upload/my-files/-/upload",
+  "upload_method": "POST",
+  "upload_headers": {},
+  "upload_fields": {"upload_token": "tok_01j5..."}
+}
+```
+
+**Step 2: Upload** — send the file to the `upload_url` from step 1:
+
+```bash
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/upload" \
+  -F "upload_token=tok_01j5..." \
+  -F "file=@photo.jpg"
+```
+
+**Step 3: Complete** — finalize the upload and register the file:
+
+```bash
+curl -X POST "http://localhost:8001/-/files/upload/my-files/-/complete" \
+  -H "Content-Type: application/json" \
+  -d '{"upload_token": "tok_01j5..."}'
+```
+
+Returns the registered file:
+
+```json
+{
+  "ok": true,
+  "file": {
+    "id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
+    "filename": "photo.jpg",
+    "content_type": "image/jpeg",
+    "content_hash": "sha256:...",
+    "size": 48210,
+    "width": null,
+    "height": null,
+    "source_slug": "my-files",
+    "uploaded_by": null,
+    "created_at": "2026-03-13 23:23:24",
+    "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq",
+    "download_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/download"
+  }
 }
 ```
 
 File IDs use the format `df-{ULID}` — the `df-` prefix makes them recognizable when stored in database columns.
+
+### Deleting files
+
+```bash
+curl -X POST "http://localhost:8001/-/files/df-01j5.../-/delete" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Requires `files-delete` permission on the file's source.
+
+Deletion also depends on the storage backend supporting `can_delete`.
+
+### Updating file metadata
+
+```bash
+curl -X POST "http://localhost:8001/-/files/df-01j5.../-/update" \
+  -H "Content-Type: application/json" \
+  -d '{"update": {"search_text": "Annual report 2025"}}'
+```
+
+Requires `files-edit` permission on the file's source. Only `search_text` can be updated through this endpoint for now, and the response returns the updated file record.
 
 ### Viewing files
 
@@ -157,6 +226,8 @@ View all configured sources and their capabilities:
 GET /-/files/sources.json
 ```
 
+This returns each source's `slug`, `storage_type`, and capability flags such as `can_upload`, `can_delete`, `can_list`, `can_generate_signed_urls`, and `requires_proxy_download`.
+
 ### Table cell integration
 
 `datasette-files` uses Datasette's [column_types system](https://docs.datasette.io/en/latest/configuration.html#column-types) to decide which columns should be treated as files.
@@ -183,12 +254,17 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/-/files` | Files index page (HTML) |
-| `GET` | `/-/files/source/{source_slug}` | Source file listing with upload (HTML) |
+| `GET` | `/-/files/source/{source_slug}` | Source file listing page, with upload UI if allowed (HTML) |
 | `GET` | `/-/files/search` | Search files (HTML) |
 | `GET` | `/-/files/search.json?q=&source=` | Search files (JSON) |
 | `GET` | `/-/files/sources.json` | List configured sources |
 | `GET` | `/-/files/batch.json?id=df-...&id=df-...` | Bulk file metadata |
-| `POST` | `/-/files/upload/{source_slug}` | Upload a file (multipart) |
+| `GET` | `/-/files/upload/{source_slug}` | Dedicated upload page (HTML) |
+| `POST` | `/-/files/upload/{source_slug}/-/prepare` | Prepare upload (get instructions) |
+| `POST` | `/-/files/upload/{source_slug}/-/upload` | Upload file content |
+| `POST` | `/-/files/upload/{source_slug}/-/complete` | Complete upload (register file) |
+| `POST` | `/-/files/{file_id}/-/delete` | Delete a file |
+| `POST` | `/-/files/{file_id}/-/update` | Update file metadata |
 | `GET` | `/-/files/{file_id}` | File info page (HTML) |
 | `GET` | `/-/files/{file_id}.json` | File metadata (JSON) |
 | `GET` | `/-/files/{file_id}/download` | Download file content |
@@ -306,7 +382,7 @@ class StorageCapabilities:
 - `can_generate_signed_urls`: The backend can produce expiring download URLs via `download_url()` — if `True`, file downloads will use a 302 redirect to the signed URL instead of proxying content through Datasette
 - `can_generate_thumbnails`: The backend can produce thumbnail URLs via `thumbnail_url()`
 - `requires_proxy_download`: File content must be proxied through Datasette (e.g. filesystem storage) rather than redirecting to an external URL
-- `max_file_size`: Optional maximum file size in bytes
+- `max_file_size`: Optional maximum file size in bytes (defaults to 100 MB)
 
 #### `FileMetadata`
 
@@ -379,11 +455,17 @@ async def read_file(self, path: str) -> bytes:
 
 Override these based on the capabilities you declared:
 
-**`receive_upload(path, content, content_type)`** — Store file content. Return a `FileMetadata` with at least the `content_hash` and `size` populated. Required if `can_upload` is `True`.
+**`receive_upload(path, stream, content_type)`** — Store file content streamed as chunks. `stream` is an `AsyncIterator[bytes]` — consume it incrementally to avoid buffering the entire file in memory. Return a `FileMetadata` with at least the `content_hash` and `size` populated. Required if `can_upload` is `True`.
 
 ```python
-async def receive_upload(self, path: str, content: bytes, content_type: str) -> FileMetadata:
-    # Store the file and return metadata
+async def receive_upload(self, path: str, stream: AsyncIterator[bytes], content_type: str) -> FileMetadata:
+    # Consume stream chunks, store the file, and return metadata
+    sha256 = hashlib.sha256()
+    size = 0
+    async for chunk in stream:
+        # write chunk to storage
+        sha256.update(chunk)
+        size += len(chunk)
     ...
 ```
 
@@ -395,7 +477,7 @@ async def receive_upload(self, path: str, content: bytes, content_type: str) -> 
 
 **`read_bytes(path, num_bytes)`** — Return up to `num_bytes` from the start of a file. The default implementation reads the full file with `read_file()` and slices it. Storage backends should override this to avoid downloading entire files — for example, S3 backends can use an HTTP `Range` header to fetch only the requested bytes. Used by the file info page to provide `preview_bytes` to `file_actions` hooks.
 
-**`stream_file(path)`** — Yield file content in chunks as an async iterator. The default implementation reads the entire file with `read_file()` and yields it as a single chunk.
+**`stream_file(path)`** — Yield file content in chunks as an async iterator. This method is used by the file download endpoint to stream files to clients without loading the entire file into memory. The default implementation reads the entire file with `read_file()` and yields it as a single chunk — storage backends should override this to yield smaller chunks for efficient memory usage with large files.
 
 **`thumbnail_url(path, width, height)`** — Return a URL for a thumbnail of the file, or `None`.
 
@@ -459,22 +541,37 @@ class S3Storage(Storage):
         )
         return resp["Body"].read()
 
+    async def stream_file(self, path: str):
+        resp = self.client.get_object(
+            Bucket=self.bucket, Key=self._key(path)
+        )
+        for chunk in resp["Body"].iter_chunks(chunk_size=65536):
+            yield chunk
+
     async def receive_upload(
-        self, path: str, content: bytes, content_type: str
+        self, path: str, stream, content_type: str
     ) -> FileMetadata:
+        # Collect chunks, computing hash incrementally
+        chunks = []
+        sha256 = hashlib.sha256()
+        size = 0
+        async for chunk in stream:
+            chunks.append(chunk)
+            sha256.update(chunk)
+            size += len(chunk)
+        content = b"".join(chunks)
         self.client.put_object(
             Bucket=self.bucket,
             Key=self._key(path),
             Body=content,
             ContentType=content_type,
         )
-        content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
         return FileMetadata(
             path=path,
             filename=path.split("/")[-1],
             content_type=content_type,
-            content_hash=content_hash,
-            size=len(content),
+            content_hash="sha256:" + sha256.hexdigest(),
+            size=size,
         )
 
     async def download_url(self, path: str, expires_in: int = 300) -> str:
@@ -547,7 +644,7 @@ The built-in `FilesystemStorage` stores files on the local filesystem. It suppor
 | Key | Required | Description |
 |-----|----------|-------------|
 | `root` | Yes | Absolute path to the directory where files are stored |
-| `max_file_size` | No | Maximum upload size in bytes |
+| `max_file_size` | No | Maximum upload size in bytes (defaults to 100 MB) |
 
 **Capabilities:**
 

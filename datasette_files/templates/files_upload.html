@@ -5,8 +5,7 @@
 {% block content %}
 <h1>Upload to {{ source_slug }}</h1>
 
-<form method="post" enctype="multipart/form-data" action="{{ urls.path('/-/files/upload/' ~ source_slug) }}">
-    <p><input type="file" name="file" required></p>
-    <p><button type="submit">Upload</button></p>
-</form>
+<datasette-file-upload source="{{ source_slug }}"></datasette-file-upload>
+
+<script type="module" src="{{ urls.static_plugins('datasette-files', 'datasette-file-upload.js') }}"></script>
 {% endblock %}

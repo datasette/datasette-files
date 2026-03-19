@@ -379,7 +379,7 @@ export function openFilePicker({ column, currentFileId }) {
       }
     }
 
-    // Upload handler
+    // Upload handler — uses prepare/upload/complete API
     uploadBtn.addEventListener("click", async () => {
       const file = fileInput.files[0];
       if (!file) {
@@ -395,20 +395,58 @@ export function openFilePicker({ column, currentFileId }) {
       uploadBtn.disabled = true;
 
       try {
+        const csrfToken = _getCsrfToken();
+
+        // Step 1: Prepare
+        const prepResp = await fetch(`/-/files/upload/${source}/-/prepare`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-csrftoken": csrfToken,
+          },
+          body: JSON.stringify({
+            filename: file.name,
+            content_type: file.type || "application/octet-stream",
+            size: file.size,
+          }),
+        });
+        if (!prepResp.ok) {
+          const errData = await prepResp.json().catch(() => null);
+          throw new Error(errData?.errors?.[0] || `Prepare failed (${prepResp.status})`);
+        }
+        const prepData = await prepResp.json();
+
+        // Step 2: Upload file bytes
         const formData = new FormData();
+        for (const [key, value] of Object.entries(prepData.upload_fields || {})) {
+          formData.append(key, value);
+        }
         formData.append("file", file);
 
-        const resp = await fetch(`/-/files/upload/${source}`, {
+        const uploadResp = await fetch(prepData.upload_url, {
           method: "POST",
-          headers: { "x-csrftoken": _getCsrfToken() },
+          headers: prepData.upload_headers || {},
           body: formData,
         });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`Upload failed (${resp.status}): ${text}`);
+        if (!uploadResp.ok) {
+          throw new Error(`Upload failed (${uploadResp.status})`);
         }
-        const data = await resp.json();
-        done(data.file_id);
+
+        // Step 3: Complete
+        const completeResp = await fetch(`/-/files/upload/${source}/-/complete`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-csrftoken": csrfToken,
+          },
+          body: JSON.stringify({ upload_token: prepData.upload_token }),
+        });
+        if (!completeResp.ok) {
+          const errData = await completeResp.json().catch(() => null);
+          throw new Error(errData?.errors?.[0] || `Complete failed (${completeResp.status})`);
+        }
+        const completeData = await completeResp.json();
+        done(completeData.file.id);
       } catch (err) {
         uploadStatus.innerHTML = `<div class="dsf-picker-error">${_escapeHtml(err.message)}</div>`;
         uploadBtn.disabled = false;
