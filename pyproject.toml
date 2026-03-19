@@ -18,6 +18,7 @@ dependencies = [
     "python-ulid",
     "sqlite-utils",
     "typing_extensions",
+    "Pillow",
 ]
 
 [dependency-groups]

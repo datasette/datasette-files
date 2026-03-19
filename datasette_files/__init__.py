@@ -2,6 +2,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from html import escape
 from typing import Optional
 from datasette import hookimpl, Response, NotFound, Forbidden
 from datasette.column_types import ColumnType, SQLiteType
@@ -48,6 +49,182 @@ _sources = {}
 # Registry of source metadata: {slug: {slug, storage_type, source_id, ...}}
 _source_meta = {}
 
+# Registry of thumbnail generators (populated in startup)
+_thumbnail_generators: list = []
+
+# --- SVG file-type icon generation ---
+
+_FILE_ICON_STYLES = {
+    "CSV": {
+        "badge": "#2E7D32",
+        "bg": "#EEF7EE",
+        "stroke": "#7AB87E",
+        "fold": "#C4E0C5",
+    },
+    "PDF": {
+        "badge": "#E05050",
+        "bg": "#FDF0EE",
+        "stroke": "#D4837A",
+        "fold": "#F5C4C0",
+    },
+    "JSON": {
+        "badge": "#F59E0B",
+        "bg": "#FFFBEB",
+        "stroke": "#D4A34A",
+        "fold": "#FDE68A",
+    },
+    "GEOJSON": {
+        "badge": "#F59E0B",
+        "bg": "#FFFBEB",
+        "stroke": "#D4A34A",
+        "fold": "#FDE68A",
+    },
+    "XLS": {
+        "badge": "#1D6F42",
+        "bg": "#EDF5F0",
+        "stroke": "#6DA88A",
+        "fold": "#B7DAC5",
+    },
+    "XLSX": {
+        "badge": "#1D6F42",
+        "bg": "#EDF5F0",
+        "stroke": "#6DA88A",
+        "fold": "#B7DAC5",
+    },
+    "DOC": {
+        "badge": "#2B579A",
+        "bg": "#EEF1F7",
+        "stroke": "#7B8FB8",
+        "fold": "#BDC9E0",
+    },
+    "DOCX": {
+        "badge": "#2B579A",
+        "bg": "#EEF1F7",
+        "stroke": "#7B8FB8",
+        "fold": "#BDC9E0",
+    },
+    "ZIP": {
+        "badge": "#7C3AED",
+        "bg": "#F3EEFF",
+        "stroke": "#A78BDB",
+        "fold": "#D4BFFA",
+    },
+    "GZ": {"badge": "#7C3AED", "bg": "#F3EEFF", "stroke": "#A78BDB", "fold": "#D4BFFA"},
+    "TAR": {
+        "badge": "#7C3AED",
+        "bg": "#F3EEFF",
+        "stroke": "#A78BDB",
+        "fold": "#D4BFFA",
+    },
+    "BZ2": {
+        "badge": "#7C3AED",
+        "bg": "#F3EEFF",
+        "stroke": "#A78BDB",
+        "fold": "#D4BFFA",
+    },
+    "7Z": {"badge": "#7C3AED", "bg": "#F3EEFF", "stroke": "#A78BDB", "fold": "#D4BFFA"},
+    "RAR": {
+        "badge": "#7C3AED",
+        "bg": "#F3EEFF",
+        "stroke": "#A78BDB",
+        "fold": "#D4BFFA",
+    },
+    "MP4": {
+        "badge": "#DC2626",
+        "bg": "#FEF2F2",
+        "stroke": "#D48A8A",
+        "fold": "#FECACA",
+    },
+    "MOV": {
+        "badge": "#DC2626",
+        "bg": "#FEF2F2",
+        "stroke": "#D48A8A",
+        "fold": "#FECACA",
+    },
+    "AVI": {
+        "badge": "#DC2626",
+        "bg": "#FEF2F2",
+        "stroke": "#D48A8A",
+        "fold": "#FECACA",
+    },
+    "MKV": {
+        "badge": "#DC2626",
+        "bg": "#FEF2F2",
+        "stroke": "#D48A8A",
+        "fold": "#FECACA",
+    },
+    "WEBM": {
+        "badge": "#DC2626",
+        "bg": "#FEF2F2",
+        "stroke": "#D48A8A",
+        "fold": "#FECACA",
+    },
+    "MP3": {
+        "badge": "#9333EA",
+        "bg": "#FAF5FF",
+        "stroke": "#B48AD8",
+        "fold": "#DDD6FE",
+    },
+    "WAV": {
+        "badge": "#9333EA",
+        "bg": "#FAF5FF",
+        "stroke": "#B48AD8",
+        "fold": "#DDD6FE",
+    },
+    "OGG": {
+        "badge": "#9333EA",
+        "bg": "#FAF5FF",
+        "stroke": "#B48AD8",
+        "fold": "#DDD6FE",
+    },
+    "FLAC": {
+        "badge": "#9333EA",
+        "bg": "#FAF5FF",
+        "stroke": "#B48AD8",
+        "fold": "#DDD6FE",
+    },
+    "M4A": {
+        "badge": "#9333EA",
+        "bg": "#FAF5FF",
+        "stroke": "#B48AD8",
+        "fold": "#DDD6FE",
+    },
+}
+_TEXT_EXTS = {"TXT", "MD", "RST"}
+_TEXT_STYLE = {
+    "badge": "#6B7280",
+    "bg": "#F3F4F6",
+    "stroke": "#9CA3AF",
+    "fold": "#D1D5DB",
+}
+_DEFAULT_STYLE = {
+    "badge": "#6B7280",
+    "bg": "#F9FAFB",
+    "stroke": "#9CA3AF",
+    "fold": "#E5E7EB",
+}
+
+_SVG_ICON_TEMPLATE = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="-2 -2 410 310"><rect x="4" y="4" width="400" height="300" rx="12" fill="#00000008"/><path d="M0,12 Q0,0 12,0 L340,0 L400,60 L400,288 Q400,300 388,300 L12,300 Q0,300 0,288 Z" fill="{bg}" stroke="{stroke}" stroke-width="2"/><path d="M340,0 L340,48 Q340,60 352,60 L400,60" fill="{fold}" stroke="{stroke}" stroke-width="2"/><rect x="100" y="110" width="200" height="80" rx="10" fill="{badge}"/><text x="200" y="150" text-anchor="middle" font-family="system-ui,sans-serif" font-size="36" font-weight="500" fill="#FFFFFF" dominant-baseline="central">{label}</text></svg>'
+
+
+def _generate_file_icon_svg(filename: str, content_type: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].upper() if "." in filename else "?"
+    if content_type == "text/csv":
+        ext = "CSV"
+    elif content_type == "application/pdf":
+        ext = "PDF"
+    elif content_type == "application/json":
+        ext = "JSON"
+
+    style = _FILE_ICON_STYLES.get(ext)
+    if not style:
+        if ext in _TEXT_EXTS or (content_type and content_type.startswith("text/")):
+            style = _TEXT_STYLE
+        else:
+            style = _DEFAULT_STYLE
+    return _SVG_ICON_TEMPLATE.format(label=escape(ext), **style)
+
+
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS datasette_files_sources (
     id INTEGER PRIMARY KEY,
@@ -90,6 +267,16 @@ CREATE TABLE IF NOT EXISTS _datasette_files_imports (
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     finished_at TEXT,
     actor_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS datasette_files_thumbnails (
+    file_id TEXT PRIMARY KEY,
+    thumbnail BLOB NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'image/png',
+    width INTEGER,
+    height INTEGER,
+    generator TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -378,6 +565,17 @@ def startup(datasette):
                 "capabilities": storage.capabilities,
             }
 
+        # Collect thumbnail generators
+        from .pillow_thumbnails import PillowThumbnailGenerator
+
+        _thumbnail_generators.clear()
+        _thumbnail_generators.append(PillowThumbnailGenerator())
+        for hook in pm.hook.register_thumbnail_generators(datasette=datasette):
+            result = await await_me_maybe(hook)
+            if result:
+                for gen in result:
+                    _thumbnail_generators.append(gen)
+
     return inner
 
 
@@ -633,6 +831,13 @@ async def upload_complete(request, datasette):
     # Fetch the created record for the response
     row = await _get_file_record(datasette, file_id)
 
+    # Eagerly generate thumbnail for image uploads
+    if (file_meta.content_type or content_type or "").startswith("image/"):
+        try:
+            await _get_or_generate_thumbnail(datasette, file_id, row)
+        except Exception:
+            pass  # Non-fatal: thumbnail will be generated lazily on first request
+
     return Response.json(
         {
             "ok": True,
@@ -649,6 +854,7 @@ async def upload_complete(request, datasette):
                 "created_at": row["created_at"],
                 "url": datasette.urls.path(f"/-/files/{file_id}"),
                 "download_url": datasette.urls.path(f"/-/files/{file_id}/download"),
+                "thumbnail_url": datasette.urls.path(f"/-/files/{file_id}/thumbnail"),
             },
         },
         status=201,
@@ -686,6 +892,9 @@ async def file_delete(request, datasette):
 
     # Delete from internal database
     db = datasette.get_internal_database()
+    await db.execute_write(
+        "DELETE FROM datasette_files_thumbnails WHERE file_id = ?", [file_id]
+    )
     await db.execute_write("DELETE FROM datasette_files WHERE id = ?", [file_id])
 
     return Response.json({"ok": True})
@@ -853,6 +1062,92 @@ class _StreamingFileResponse:
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
+async def file_thumbnail(request, datasette):
+    """GET /-/files/{file_id}/thumbnail - return thumbnail or file-type icon."""
+    file_id = request.url_vars["file_id"]
+    row = await _get_file_record(datasette, file_id)
+    if row is None:
+        raise NotFound(f"File not found: {file_id}")
+
+    await _check_browse_permission(datasette, request, row["source_slug"])
+
+    content_type = row["content_type"] or ""
+
+    # For image files, try to get/generate a real thumbnail
+    if content_type.startswith("image/"):
+        result = await _get_or_generate_thumbnail(datasette, file_id, row)
+        if result:
+            thumb_bytes, thumb_content_type = result
+            return Response(
+                body=thumb_bytes,
+                content_type=thumb_content_type,
+            )
+
+    # For non-image files (or if generation failed), return SVG icon
+    svg = _generate_file_icon_svg(row["filename"], content_type)
+    return Response(
+        body=svg,
+        content_type="image/svg+xml",
+    )
+
+
+async def _get_or_generate_thumbnail(datasette, file_id, row):
+    """Return (thumbnail_bytes, content_type) or None. Checks cache, generates on miss."""
+    db = datasette.get_internal_database()
+
+    cached = (
+        await db.execute(
+            "SELECT thumbnail, content_type FROM datasette_files_thumbnails WHERE file_id = ?",
+            [file_id],
+        )
+    ).first()
+    if cached:
+        return cached["thumbnail"], cached["content_type"]
+
+    content_type = row["content_type"] or ""
+    filename = row["filename"]
+    source_slug = row["source_slug"]
+
+    if source_slug not in _sources:
+        return None
+
+    storage = _sources[source_slug]
+
+    for generator in _thumbnail_generators:
+        if not await generator.can_generate(content_type, filename):
+            continue
+        try:
+            file_bytes = await storage.read_file(row["path"])
+            result = await generator.generate(
+                file_bytes, content_type, filename, max_width=200, max_height=200
+            )
+            if result:
+                thumb_bytes, thumb_content_type = result
+                from PIL import Image as PILImage
+                import io as _io
+
+                thumb_img = PILImage.open(_io.BytesIO(thumb_bytes))
+                width, height = thumb_img.size
+                await db.execute_write(
+                    """INSERT OR REPLACE INTO datasette_files_thumbnails
+                       (file_id, thumbnail, content_type, width, height, generator)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [
+                        file_id,
+                        thumb_bytes,
+                        thumb_content_type,
+                        width,
+                        height,
+                        generator.name,
+                    ],
+                )
+                return thumb_bytes, thumb_content_type
+        except Exception:
+            continue
+
+    return None
+
+
 async def file_download(request, datasette):
     """GET /-/files/{file_id}/download - download the file."""
     file_id = request.url_vars["file_id"]
@@ -927,6 +1222,7 @@ async def batch_json(request, datasette):
             "width": row["width"],
             "height": row["height"],
             "download_url": datasette.urls.path(f"/-/files/{file_id}/download"),
+            "thumbnail_url": datasette.urls.path(f"/-/files/{file_id}/thumbnail"),
             "info_url": datasette.urls.path(f"/-/files/{file_id}"),
         }
 
@@ -1183,6 +1479,7 @@ def register_routes():
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/-/delete$", file_delete),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/-/update$", file_update),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)\.json$", file_json),
+        (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/thumbnail$", file_thumbnail),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)/download$", file_download),
         (r"^/-/files/(?P<file_id>df-[a-z0-9]+)$", file_info),
         (r"^/-/files/source/(?P<source_slug>[^/]+)$", source_files),
@@ -1484,7 +1781,9 @@ async def import_file_view(request, datasette):
         )
     )
 
-    return Response.redirect(datasette.urls.path(f"/-/files/import/{file_id}/{import_id}"))
+    return Response.redirect(
+        datasette.urls.path(f"/-/files/import/{file_id}/{import_id}")
+    )
 
 
 async def import_progress_view(request, datasette):
