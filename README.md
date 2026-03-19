@@ -170,8 +170,6 @@ Returns the registered file:
 
 File IDs use the format `df-{ULID}` — the `df-` prefix makes them recognizable when stored in database columns.
 
-The legacy single-step upload endpoint (`POST /-/files/upload/{source_slug}` with multipart form data) is still supported for backwards compatibility.
-
 ### Deleting files
 
 ```bash
@@ -265,7 +263,6 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | `POST` | `/-/files/upload/{source_slug}/-/prepare` | Prepare upload (get instructions) |
 | `POST` | `/-/files/upload/{source_slug}/-/upload` | Upload file content |
 | `POST` | `/-/files/upload/{source_slug}/-/complete` | Complete upload (register file) |
-| `POST` | `/-/files/upload/{source_slug}` | Legacy single-step upload (multipart) |
 | `POST` | `/-/files/{file_id}/-/delete` | Delete a file |
 | `POST` | `/-/files/{file_id}/-/update` | Update file metadata |
 | `GET` | `/-/files/{file_id}` | File info page (HTML) |

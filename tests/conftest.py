@@ -1,4 +1,5 @@
 from datasette.app import Datasette
+import json
 import pytest
 import os
 
@@ -103,21 +104,57 @@ async def _upload_file(
     content=b"Hello from test!",
     content_type="text/plain",
 ):
-    """Helper to upload a file via the legacy multipart endpoint and return the response JSON."""
-    response = await ds.client.post(
-        f"/-/files/upload/{source}",
+    """Helper to upload a file via the prepare/upload/complete API."""
+    prepare = await ds.client.post(
+        f"/-/files/upload/{source}/-/prepare",
+        content=json.dumps(
+            {
+                "filename": filename,
+                "content_type": content_type,
+                "size": len(content),
+            }
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    assert prepare.status_code == 200, prepare.text
+    prepare_data = prepare.json()
+
+    upload = await ds.client.post(
+        prepare_data["upload_url"],
         content=(
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="upload_token"\r\n'
+            b"\r\n"
+            + prepare_data["upload_token"].encode()
+            + b"\r\n"
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="file"; filename="'
             + filename.encode()
             + b'"\r\n'
-            b"Content-Type: " + content_type.encode() + b"\r\n"
-            b"\r\n" + content + b"\r\n"
+            b"Content-Type: "
+            + content_type.encode()
+            + b"\r\n"
+            b"\r\n"
+            + content
+            + b"\r\n"
             b"--boundary--\r\n"
         ),
-        headers={
-            "Content-Type": "multipart/form-data; boundary=boundary",
-        },
+        headers={"Content-Type": "multipart/form-data; boundary=boundary"},
     )
-    assert response.status_code == 200, response.text
-    return response.json()
+    assert upload.status_code == 200, upload.text
+
+    complete = await ds.client.post(
+        f"/-/files/upload/{source}/-/complete",
+        content=json.dumps({"upload_token": prepare_data["upload_token"]}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert complete.status_code == 201, complete.text
+    file_data = complete.json()["file"]
+    return {
+        "file_id": file_data["id"],
+        "filename": file_data["filename"],
+        "content_type": file_data["content_type"],
+        "size": file_data["size"],
+        "url": file_data["url"],
+        "file": file_data,
+    }

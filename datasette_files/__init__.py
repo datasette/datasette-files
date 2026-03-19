@@ -364,16 +364,17 @@ def startup(datasette):
 # --- Route handlers ---
 
 
-async def upload_file(request, datasette):
-    """GET/POST /-/files/upload/{source_slug} - upload form and handler."""
+async def upload_page(request, datasette):
+    """GET /-/files/upload/{source_slug} - dedicated upload page."""
     source_slug = request.url_vars["source_slug"]
     if source_slug not in _sources:
         raise NotFound(f"Source not found: {source_slug}")
 
-    storage = _sources[source_slug]
-    meta = _source_meta[source_slug]
+    if request.method != "GET":
+        return Response.text(
+            "Method not allowed", status=405, headers={"Allow": "GET"}
+        )
 
-    # Check upload permission for both GET (form page) and POST (actual upload)
     can_upload = await datasette.allowed(
         action="files-upload",
         resource=FileSourceResource(source_slug),
@@ -382,68 +383,12 @@ async def upload_file(request, datasette):
     if not can_upload:
         raise Forbidden("Permission denied: files-upload on source " + source_slug)
 
-    if request.method == "GET":
-        return Response.html(
-            await datasette.render_template(
-                "files_upload.html",
-                {"source_slug": source_slug},
-                request=request,
-            )
+    return Response.html(
+        await datasette.render_template(
+            "files_upload.html",
+            {"source_slug": source_slug},
+            request=request,
         )
-
-    # Parse the multipart upload
-    form = await request.form(files=True)
-    uploaded = form.get("file")
-    if uploaded is None or not hasattr(uploaded, "read"):
-        return Response.json({"error": "No file provided"}, status=400)
-
-    content = await uploaded.read()
-    filename = _sanitize_filename(uploaded.filename or "unnamed")
-    content_type = uploaded.content_type or "application/octet-stream"
-
-    # Generate file ID and path
-    file_id = "df-" + str(ULID()).lower()
-    ulid_part = file_id[3:]
-    path = f"{ulid_part}/{filename}"
-
-    # Store the file
-    file_meta = await storage.receive_upload(path, content, content_type)
-
-    # Record in internal database
-    db = datasette.get_internal_database()
-    await db.execute_write(
-        """
-        INSERT INTO datasette_files
-            (id, source_id, path, filename, content_type, content_hash, size, uploaded_by)
-        VALUES
-            (:id, :source_id, :path, :filename, :content_type, :content_hash, :size, :uploaded_by)
-        """,
-        {
-            "id": file_id,
-            "source_id": meta["source_id"],
-            "path": path,
-            "filename": filename,
-            "content_type": file_meta.content_type or content_type,
-            "content_hash": file_meta.content_hash,
-            "size": file_meta.size or len(content),
-            "uploaded_by": (request.actor or {}).get("id"),
-        },
-    )
-
-    await form.aclose()
-
-    accept = request.headers.get("accept", "")
-    if "text/html" in accept:
-        return Response.redirect(f"/-/files/{file_id}")
-
-    return Response.json(
-        {
-            "file_id": file_id,
-            "filename": filename,
-            "content_type": content_type,
-            "size": file_meta.size or len(content),
-            "url": f"/-/files/{file_id}",
-        }
     )
 
 
@@ -829,50 +774,18 @@ async def _get_file_record(datasette, file_id):
 
 
 async def file_info(request, datasette):
-    """GET/POST /-/files/{file_id} - HTML info page about a file.
+    """GET /-/files/{file_id} - HTML info page about a file."""
+    if request.method != "GET":
+        return Response.text(
+            "Method not allowed", status=405, headers={"Allow": "GET"}
+        )
 
-    POST updates the search_text field (requires files-edit permission).
-    """
     file_id = request.url_vars["file_id"]
     row = await _get_file_record(datasette, file_id)
     if row is None:
         raise NotFound(f"File not found: {file_id}")
 
     await _check_browse_permission(datasette, request, row["source_slug"])
-
-    saved = False
-
-    if request.method == "POST":
-        # Check files-edit permission
-        can_edit = await datasette.allowed(
-            action="files-edit",
-            resource=FileSourceResource(row["source_slug"]),
-            actor=request.actor,
-        )
-        if not can_edit:
-            raise Forbidden(
-                "Permission denied: files-edit on source " + row["source_slug"]
-            )
-
-        form = await request.post_vars()
-        search_text = form.get("search_text", "")
-
-        db = datasette.get_internal_database()
-        await db.execute_write(
-            "UPDATE datasette_files SET search_text = :search_text WHERE id = :id",
-            {"search_text": search_text, "id": file_id},
-        )
-
-        # Re-fetch the updated row
-        row = await _get_file_record(datasette, file_id)
-        saved = True
-
-    # Check if current actor can edit (for showing/hiding the form)
-    can_edit = await datasette.allowed(
-        action="files-edit",
-        resource=FileSourceResource(row["source_slug"]),
-        actor=request.actor,
-    )
 
     file_dict = dict(row)
 
@@ -903,8 +816,6 @@ async def file_info(request, datasette):
             "file_info.html",
             {
                 "file": file_dict,
-                "can_edit": can_edit,
-                "saved": saved,
                 "file_actions": get_file_actions,
             },
             request=request,
@@ -1241,8 +1152,7 @@ def register_routes():
         (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/prepare$", upload_prepare),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/upload$", upload_content),
         (r"^/-/files/upload/(?P<source_slug>[^/]+)/-/complete$", upload_complete),
-        # Legacy upload endpoint (still works)
-        (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_file),
+        (r"^/-/files/upload/(?P<source_slug>[^/]+)$", upload_page),
         (
             r"^/-/files/import/(?P<file_id>df-[a-z0-9]+)/(?P<import_id>\d+)\.json$",
             import_progress_view,
@@ -1634,9 +1544,6 @@ def file_actions(datasette, actor, file, preview_bytes):
     return []
 
 
-_FILE_INFO_PATH_RE = re.compile(r"^/-/files/df-[a-z0-9]{26}$")
-
-
 @hookimpl
 async def homepage_actions(datasette, actor, request):
     resources_sql = await datasette.allowed_resources_sql(
@@ -1666,6 +1573,3 @@ def skip_csrf(datasette, scope):
     if _FILE_ID_RE.match(path.split("/")[-2] if path.count("/") >= 4 else ""):
         if path.endswith("/-/delete") or path.endswith("/-/update"):
             return True
-    # POST to file info page (search_text edit form)
-    if _FILE_INFO_PATH_RE.match(path):
-        return True

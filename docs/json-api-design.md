@@ -521,7 +521,7 @@ POST /-/files/{file_id}/-/update
 ```
 
 **Notes:**
-- Only `search_text` is editable for now. The current implementation handles this via a form POST on the HTML file info page. This endpoint provides a JSON equivalent.
+- Only `search_text` is editable for now.
 - Could be extended in the future to allow editing `metadata` (the JSON field) without changing the API shape.
 - The `update` key follows the same pattern as Datasette's `POST /<db>/<table>/<pk>/-/update` endpoint.
 
@@ -536,15 +536,15 @@ POST /-/files/{file_id}/-/update
 
 | Area | Current | Proposed |
 |------|---------|----------|
-| Upload flow | Single POST with multipart, returns file record immediately | Unified three-step prepare → upload → complete for all backends |
-| Response wrapper | Mixed — some return raw data, upload returns flat `{file_id, ...}` | All responses wrapped in `{ok: true, ...}` |
-| Upload response | `{file_id, filename, content_type, size, url}` | `{ok, file: {id, filename, content_type, content_hash, size, source_slug, download_url, ...}}` |
+| Upload flow | Unified three-step prepare → upload → complete | Unified three-step prepare → upload → complete for all backends |
+| Response wrapper | Mixed — some return raw data | All responses wrapped in `{ok: true, ...}` |
+| Upload response | `{ok, file: {id, filename, content_type, content_hash, size, source_slug, download_url, ...}}` | `{ok, file: {id, filename, content_type, content_hash, size, source_slug, download_url, ...}}` |
 | File metadata response | `dict(row)` (raw DB columns) | Curated `{ok, file: {...}}` with `download_url` |
 | Batch response | `{files: {...}}` | `{ok: true, files: {...}}` |
 | Search response | `{q, source, files, sources}` | `{ok: true, q, source, files, sources}` |
 | Source file listing | HTML only | Add `.json` variant with pagination metadata |
 | Delete | Not implemented | `POST /-/files/{file_id}/-/delete` |
-| Metadata update | HTML form POST only | `POST /-/files/{file_id}/-/update` |
+| Metadata update | `POST /-/files/{file_id}/-/update` | `POST /-/files/{file_id}/-/update` |
 | Error format | Inconsistent | All errors: `{ok: false, errors: [...]}` |
 
 ## Design Decisions

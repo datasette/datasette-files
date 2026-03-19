@@ -228,16 +228,11 @@ async def test_upload_file(datasette_upload_allowed, upload_dir):
 async def test_upload_requires_valid_source(datasette_with_files):
     ds = datasette_with_files
     response = await ds.client.post(
-        "/-/files/upload/nonexistent",
-        content=b"--boundary\r\n"
-        b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
-        b"Content-Type: text/plain\r\n"
-        b"\r\n"
-        b"data\r\n"
-        b"--boundary--\r\n",
-        headers={
-            "Content-Type": "multipart/form-data; boundary=boundary",
-        },
+        "/-/files/upload/nonexistent/-/prepare",
+        content=json.dumps(
+            {"filename": "test.txt", "content_type": "text/plain", "size": 4}
+        ),
+        headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 404
 
@@ -247,21 +242,14 @@ async def test_upload_requires_valid_source(datasette_with_files):
 
 @pytest.mark.asyncio
 async def test_upload_post_denied_without_permission(datasette_with_files):
-    """POST to upload endpoint should return 403 without files-upload permission."""
+    """Prepare should return 403 without files-upload permission."""
     ds = datasette_with_files
     response = await ds.client.post(
-        "/-/files/upload/test-uploads",
-        content=(
-            b"--boundary\r\n"
-            b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
-            b"Content-Type: text/plain\r\n"
-            b"\r\n"
-            b"sneaky upload\r\n"
-            b"--boundary--\r\n"
+        "/-/files/upload/test-uploads/-/prepare",
+        content=json.dumps(
+            {"filename": "test.txt", "content_type": "text/plain", "size": 13}
         ),
-        headers={
-            "Content-Type": "multipart/form-data; boundary=boundary",
-        },
+        headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 403
 
@@ -1024,190 +1012,6 @@ async def test_files_edit_action_registered(datasette_with_files):
     ds = datasette_with_files
     await ds.invoke_startup()
     assert "files-edit" in ds.actions
-
-
-@pytest.mark.asyncio
-async def test_edit_search_text_denied_without_permission(
-    datasette_browse_allowed, upload_dir
-):
-    """POST to file info page without files-edit permission returns 403."""
-    ds = datasette_browse_allowed
-    data = await _upload_file(ds, filename="noedit.txt", content=b"content")
-    file_id = data["file_id"]
-
-    response = await ds.client.post(
-        f"/-/files/{file_id}",
-        data={"search_text": "test"},
-    )
-    assert response.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_edit_search_text_with_permission(tmp_path):
-    """POST to file info page with files-edit permission updates search_text."""
-    upload_dir = str(tmp_path / "uploads")
-    os.makedirs(upload_dir)
-
-    ds = Datasette(
-        memory=True,
-        config={
-            "plugins": {
-                "datasette-files": {
-                    "sources": {
-                        "editable": {
-                            "storage": "filesystem",
-                            "config": {"root": upload_dir},
-                        }
-                    }
-                }
-            },
-            "permissions": {
-                "files-upload": True,
-                "files-browse": True,
-                "files-edit": {
-                    "editable": {
-                        "allow": {"id": "editor"},
-                    },
-                },
-            },
-        },
-    )
-
-    data = await _upload_file(
-        ds, source="editable", filename="doc.txt", content=b"hello"
-    )
-    file_id = data["file_id"]
-
-    # Editor can update search_text
-    editor_cookie = {"ds_actor": ds.sign({"a": {"id": "editor"}}, "actor")}
-    response = await ds.client.post(
-        f"/-/files/{file_id}",
-        data={"search_text": "quarterly financial report Q4 2025"},
-        cookies=editor_cookie,
-    )
-    assert response.status_code == 200
-    assert "Search text saved" in response.text
-
-    # Verify the search_text was persisted
-    db = ds.get_internal_database()
-    row = (
-        await db.execute(
-            "SELECT search_text FROM datasette_files WHERE id = ?", [file_id]
-        )
-    ).first()
-    assert row["search_text"] == "quarterly financial report Q4 2025"
-
-    # Verify FTS can find the file by search_text
-    response = await ds.client.get("/-/files/search.json?q=quarterly")
-    assert response.status_code == 200
-    files = response.json()["files"]
-    assert len(files) == 1
-    assert files[0]["id"] == file_id
-
-
-@pytest.mark.asyncio
-async def test_edit_form_visible_with_permission(tmp_path):
-    """File info page shows edit form when actor has files-edit permission."""
-    upload_dir = str(tmp_path / "uploads")
-    os.makedirs(upload_dir)
-
-    ds = Datasette(
-        memory=True,
-        config={
-            "plugins": {
-                "datasette-files": {
-                    "sources": {
-                        "editable": {
-                            "storage": "filesystem",
-                            "config": {"root": upload_dir},
-                        }
-                    }
-                }
-            },
-            "permissions": {
-                "files-upload": True,
-                "files-browse": True,
-                "files-edit": {
-                    "editable": {
-                        "allow": {"id": "editor"},
-                    },
-                },
-            },
-        },
-    )
-
-    data = await _upload_file(
-        ds, source="editable", filename="doc.txt", content=b"hello"
-    )
-    file_id = data["file_id"]
-
-    # Editor sees the textarea form
-    editor_cookie = {"ds_actor": ds.sign({"a": {"id": "editor"}}, "actor")}
-    response = await ds.client.get(f"/-/files/{file_id}", cookies=editor_cookie)
-    assert response.status_code == 200
-    assert "<textarea" in response.text
-    assert "search_text" in response.text
-
-    # Anonymous user sees "No search text set" instead of form
-    response = await ds.client.get(f"/-/files/{file_id}")
-    assert response.status_code == 200
-    assert "<textarea" not in response.text
-    assert "No search text set" in response.text
-
-
-@pytest.mark.asyncio
-async def test_edit_search_text_non_editor_denied(tmp_path):
-    """Non-editor actor cannot POST search_text even with browse permission."""
-    upload_dir = str(tmp_path / "uploads")
-    os.makedirs(upload_dir)
-
-    ds = Datasette(
-        memory=True,
-        config={
-            "plugins": {
-                "datasette-files": {
-                    "sources": {
-                        "editable": {
-                            "storage": "filesystem",
-                            "config": {"root": upload_dir},
-                        }
-                    }
-                }
-            },
-            "permissions": {
-                "files-upload": True,
-                "files-browse": True,
-                "files-edit": {
-                    "editable": {
-                        "allow": {"id": "editor"},
-                    },
-                },
-            },
-        },
-    )
-
-    data = await _upload_file(
-        ds, source="editable", filename="doc.txt", content=b"hello"
-    )
-    file_id = data["file_id"]
-
-    # Bob can browse but not edit
-    bob_cookie = {"ds_actor": ds.sign({"a": {"id": "bob"}}, "actor")}
-    response = await ds.client.post(
-        f"/-/files/{file_id}",
-        data={"search_text": "hacked"},
-        cookies=bob_cookie,
-    )
-    assert response.status_code == 403
-
-    # Verify search_text was NOT changed
-    db = ds.get_internal_database()
-    row = (
-        await db.execute(
-            "SELECT search_text FROM datasette_files WHERE id = ?", [file_id]
-        )
-    ).first()
-    assert row["search_text"] == ""
 
 
 # --- render_cell with data-column ---
