@@ -36,6 +36,7 @@ class UploadToken:
 # Upload token store: {token_string: UploadToken}
 _upload_tokens: dict[str, UploadToken] = {}
 _UPLOAD_TOKEN_TTL = 3600  # 1 hour
+_DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 
 pm.add_hookspecs(hookspecs)
 
@@ -504,8 +505,8 @@ async def upload_content(request, datasette):
     storage = _sources[source_slug]
 
     # Parse multipart form — use storage's max_file_size if configured,
-    # otherwise allow up to 2 GiB per file.
-    max_size = storage.capabilities.max_file_size or 2 * 1024 * 1024 * 1024
+    # otherwise use the default limit.
+    max_size = storage.capabilities.max_file_size or _DEFAULT_MAX_FILE_SIZE
     form = await request.form(
         files=True,
         max_file_size=max_size,

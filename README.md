@@ -382,7 +382,7 @@ class StorageCapabilities:
 - `can_generate_signed_urls`: The backend can produce expiring download URLs via `download_url()` — if `True`, file downloads will use a 302 redirect to the signed URL instead of proxying content through Datasette
 - `can_generate_thumbnails`: The backend can produce thumbnail URLs via `thumbnail_url()`
 - `requires_proxy_download`: File content must be proxied through Datasette (e.g. filesystem storage) rather than redirecting to an external URL
-- `max_file_size`: Optional maximum file size in bytes
+- `max_file_size`: Optional maximum file size in bytes (defaults to 100 MB)
 
 #### `FileMetadata`
 
@@ -644,7 +644,7 @@ The built-in `FilesystemStorage` stores files on the local filesystem. It suppor
 | Key | Required | Description |
 |-----|----------|-------------|
 | `root` | Yes | Absolute path to the directory where files are stored |
-| `max_file_size` | No | Maximum upload size in bytes |
+| `max_file_size` | No | Maximum upload size in bytes (defaults to 100 MB) |
 
 **Capabilities:**
 
