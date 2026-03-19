@@ -101,11 +101,13 @@ permissions:
 
 ### Uploading files
 
-The upload UI provides a drag-and-drop area for multiple files, with per-file progress bars and SVG file-type icon previews. Visit `/-/files/upload/{source_slug}` or use the upload area on any source page.
+Visit `/-/files/upload/{source_slug}` for a dedicated drag-and-drop upload page. It supports multiple files, per-file progress bars, and SVG file-type previews.
+
+The same upload component is shown on `/-/files/source/{source_slug}` when you have `files-upload` permission for that source.
 
 #### Upload API
 
-All uploads use a three-step flow: **prepare**, **upload content**, **complete**. This applies to all storage backends — for filesystem, the content goes through Datasette; for S3-style backends, the content goes directly to the storage service.
+The upload UI and the file picker dialog both use a three-step flow: **prepare**, **upload content**, **complete**. For the built-in `filesystem` backend, step 2 uploads the file bytes to Datasette.
 
 **Step 1: Prepare**
 
@@ -153,8 +155,14 @@ Returns the registered file:
     "id": "df-01j5a3b4c5d6e7f8g9h0jkmnpq",
     "filename": "photo.jpg",
     "content_type": "image/jpeg",
+    "content_hash": "sha256:...",
     "size": 48210,
+    "width": null,
+    "height": null,
     "source_slug": "my-files",
+    "uploaded_by": null,
+    "created_at": "2026-03-13 23:23:24",
+    "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq",
     "download_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/download"
   }
 }
@@ -174,6 +182,8 @@ curl -X POST "http://localhost:8001/-/files/df-01j5.../-/delete" \
 
 Requires `files-delete` permission on the file's source.
 
+Deletion also depends on the storage backend supporting `can_delete`.
+
 ### Updating file metadata
 
 ```bash
@@ -182,7 +192,7 @@ curl -X POST "http://localhost:8001/-/files/df-01j5.../-/update" \
   -d '{"update": {"search_text": "Annual report 2025"}}'
 ```
 
-Requires `files-edit` permission on the file's source.
+Requires `files-edit` permission on the file's source. Only `search_text` can be updated through this endpoint for now, and the response returns the updated file record.
 
 ### Viewing files
 
@@ -218,6 +228,8 @@ View all configured sources and their capabilities:
 GET /-/files/sources.json
 ```
 
+This returns each source's `slug`, `storage_type`, and capability flags such as `can_upload`, `can_delete`, `can_list`, `can_generate_signed_urls`, and `requires_proxy_download`.
+
 ### Table cell integration
 
 `datasette-files` uses Datasette's [column_types system](https://docs.datasette.io/en/latest/configuration.html#column-types) to decide which columns should be treated as files.
@@ -244,14 +256,15 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/-/files` | Files index page (HTML) |
-| `GET` | `/-/files/source/{source_slug}` | Source file listing with upload (HTML) |
+| `GET` | `/-/files/source/{source_slug}` | Source file listing page, with upload UI if allowed (HTML) |
 | `GET` | `/-/files/search` | Search files (HTML) |
 | `GET` | `/-/files/search.json?q=&source=` | Search files (JSON) |
 | `GET` | `/-/files/sources.json` | List configured sources |
 | `GET` | `/-/files/batch.json?id=df-...&id=df-...` | Bulk file metadata |
-| `POST` | `/-/files/upload/{source}/-/prepare` | Prepare upload (get instructions) |
-| `POST` | `/-/files/upload/{source}/-/content` | Upload file content |
-| `POST` | `/-/files/upload/{source}/-/complete` | Complete upload (register file) |
+| `GET` | `/-/files/upload/{source_slug}` | Dedicated upload page (HTML) |
+| `POST` | `/-/files/upload/{source_slug}/-/prepare` | Prepare upload (get instructions) |
+| `POST` | `/-/files/upload/{source_slug}/-/content` | Upload file content |
+| `POST` | `/-/files/upload/{source_slug}/-/complete` | Complete upload (register file) |
 | `POST` | `/-/files/upload/{source_slug}` | Legacy single-step upload (multipart) |
 | `POST` | `/-/files/{file_id}/-/delete` | Delete a file |
 | `POST` | `/-/files/{file_id}/-/update` | Update file metadata |
