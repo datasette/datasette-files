@@ -1,7 +1,7 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from .base import FileMetadata, Storage, StorageCapabilities
 
@@ -39,6 +39,17 @@ class FilesystemStorage(Storage):
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path}")
         return target.read_bytes()
+
+    async def stream_file(self, path: str) -> AsyncIterator[bytes]:
+        target = self.root / path
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        with open(target, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                yield chunk
 
     async def list_files(
         self,

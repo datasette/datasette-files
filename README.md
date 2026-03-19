@@ -471,7 +471,7 @@ async def receive_upload(self, path: str, content: bytes, content_type: str) -> 
 
 **`read_bytes(path, num_bytes)`** — Return up to `num_bytes` from the start of a file. The default implementation reads the full file with `read_file()` and slices it. Storage backends should override this to avoid downloading entire files — for example, S3 backends can use an HTTP `Range` header to fetch only the requested bytes. Used by the file info page to provide `preview_bytes` to `file_actions` hooks.
 
-**`stream_file(path)`** — Yield file content in chunks as an async iterator. The default implementation reads the entire file with `read_file()` and yields it as a single chunk.
+**`stream_file(path)`** — Yield file content in chunks as an async iterator. This method is used by the file download endpoint to stream files to clients without loading the entire file into memory. The default implementation reads the entire file with `read_file()` and yields it as a single chunk — storage backends should override this to yield smaller chunks for efficient memory usage with large files.
 
 **`thumbnail_url(path, width, height)`** — Return a URL for a thumbnail of the file, or `None`.
 
@@ -534,6 +534,13 @@ class S3Storage(Storage):
             Range=f"bytes=0-{num_bytes - 1}",
         )
         return resp["Body"].read()
+
+    async def stream_file(self, path: str):
+        resp = self.client.get_object(
+            Bucket=self.bucket, Key=self._key(path)
+        )
+        for chunk in resp["Body"].iter_chunks(chunk_size=65536):
+            yield chunk
 
     async def receive_upload(
         self, path: str, content: bytes, content_type: str

@@ -798,6 +798,40 @@ async def file_json(request, datasette):
     return Response.json(dict(row))
 
 
+class _StreamingFileResponse:
+    """ASGI response that streams file content in chunks via storage.stream_file()."""
+
+    def __init__(self, storage, path, content_type, filename, size=None):
+        self.storage = storage
+        self.path = path
+        self.content_type = content_type
+        self.filename = filename
+        self.size = size
+
+    async def asgi_send(self, send):
+        headers = {
+            "content-type": self.content_type,
+            "content-disposition": f'inline; filename="{self.filename}"',
+        }
+        if self.size is not None:
+            headers["content-length"] = str(self.size)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    [k.encode("latin1"), v.encode("latin1")]
+                    for k, v in headers.items()
+                ],
+            }
+        )
+        async for chunk in self.storage.stream_file(self.path):
+            await send(
+                {"type": "http.response.body", "body": chunk, "more_body": True}
+            )
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
 async def file_download(request, datasette):
     """GET /-/files/{file_id}/download - download the file."""
     file_id = request.url_vars["file_id"]
@@ -818,15 +852,14 @@ async def file_download(request, datasette):
         url = await storage.download_url(row["path"])
         return Response.redirect(url, status=302)
 
-    # Otherwise proxy the content
-    content = await storage.read_file(row["path"])
+    # Stream the file content without loading it all into memory
     content_type = row["content_type"] or "application/octet-stream"
-    return Response(
-        body=content,
+    return _StreamingFileResponse(
+        storage=storage,
+        path=row["path"],
         content_type=content_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{row["filename"]}"',
-        },
+        filename=row["filename"],
+        size=row["size"],
     )
 
 
