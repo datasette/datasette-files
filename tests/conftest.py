@@ -124,19 +124,13 @@ async def _upload_file(
         content=(
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="upload_token"\r\n'
-            b"\r\n"
-            + prepare_data["upload_token"].encode()
-            + b"\r\n"
+            b"\r\n" + prepare_data["upload_token"].encode() + b"\r\n"
             b"--boundary\r\n"
             b'Content-Disposition: form-data; name="file"; filename="'
             + filename.encode()
             + b'"\r\n'
-            b"Content-Type: "
-            + content_type.encode()
-            + b"\r\n"
-            b"\r\n"
-            + content
-            + b"\r\n"
+            b"Content-Type: " + content_type.encode() + b"\r\n"
+            b"\r\n" + content + b"\r\n"
             b"--boundary--\r\n"
         ),
         headers={"Content-Type": "multipart/form-data; boundary=boundary"},

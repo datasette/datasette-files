@@ -1,6 +1,8 @@
 import json
 import re
 import time
+from dataclasses import dataclass, field
+from typing import Optional
 from datasette import hookimpl, Response, NotFound, Forbidden
 from datasette.column_types import ColumnType, SQLiteType
 from datasette.permissions import Action, PermissionSQL, Resource
@@ -14,8 +16,25 @@ from .filesystem import FilesystemStorage
 
 _FILE_ID_RE = re.compile(r"^df-[a-z0-9]{26}$")
 
-# Upload token store: {token: {source_slug, filename, content_type, size, path, file_id, created_at, used}}
-_upload_tokens = {}
+
+@dataclass
+class UploadToken:
+    source_slug: str
+    filename: str
+    content_type: str
+    size: Optional[int]
+    path: str
+    file_id: str
+    created_at: float
+    used: bool = False
+    content_received: bool = False
+    actor: Optional[dict] = None
+    file_meta: Optional["FileMetadata"] = None
+    actual_size: Optional[int] = None
+
+
+# Upload token store: {token_string: UploadToken}
+_upload_tokens: dict[str, UploadToken] = {}
 _UPLOAD_TOKEN_TTL = 3600  # 1 hour
 
 pm.add_hookspecs(hookspecs)
@@ -371,9 +390,7 @@ async def upload_page(request, datasette):
         raise NotFound(f"Source not found: {source_slug}")
 
     if request.method != "GET":
-        return Response.text(
-            "Method not allowed", status=405, headers={"Allow": "GET"}
-        )
+        return Response.text("Method not allowed", status=405, headers={"Allow": "GET"})
 
     can_upload = await datasette.allowed(
         action="files-upload",
@@ -396,9 +413,7 @@ def _clean_expired_tokens():
     """Remove expired upload tokens."""
     now = time.time()
     expired = [
-        t
-        for t, v in _upload_tokens.items()
-        if now - v["created_at"] > _UPLOAD_TOKEN_TTL
+        t for t, v in _upload_tokens.items() if now - v.created_at > _UPLOAD_TOKEN_TTL
     ]
     for t in expired:
         del _upload_tokens[t]
@@ -452,18 +467,16 @@ async def upload_prepare(request, datasette):
     # Generate upload token
     _clean_expired_tokens()
     token = "tok_" + str(ULID()).lower()
-    _upload_tokens[token] = {
-        "source_slug": source_slug,
-        "filename": filename,
-        "content_type": content_type,
-        "size": size,
-        "path": path,
-        "file_id": file_id,
-        "created_at": time.time(),
-        "used": False,
-        "content_received": False,
-        "actor": request.actor,
-    }
+    _upload_tokens[token] = UploadToken(
+        source_slug=source_slug,
+        filename=filename,
+        content_type=content_type,
+        size=size,
+        path=path,
+        file_id=file_id,
+        created_at=time.time(),
+        actor=request.actor,
+    )
 
     # Build upload URL - for filesystem, it points to our upload endpoint
     upload_url = f"/-/files/upload/{source_slug}/-/upload"
@@ -513,18 +526,18 @@ async def upload_content(request, datasette):
         if not token_data:
             return _error("Invalid or expired upload token")
 
-        if token_data["source_slug"] != source_slug:
+        if token_data.source_slug != source_slug:
             return _error("Token does not match this source")
 
-        if token_data["content_received"]:
+        if token_data.content_received:
             return _error("Content already uploaded for this token")
 
         uploaded = form.get("file")
         if uploaded is None or not hasattr(uploaded, "read"):
             return _error("No file provided")
 
-        content_type = token_data["content_type"]
-        path = token_data["path"]
+        content_type = token_data.content_type
+        path = token_data.path
 
         # Stream file chunks to the storage backend
         async def _upload_chunks(uploaded_file, chunk_size=65536):
@@ -539,9 +552,9 @@ async def upload_content(request, datasette):
         )
 
         # Save metadata on the token for the complete step
-        token_data["content_received"] = True
-        token_data["file_meta"] = file_meta
-        token_data["actual_size"] = file_meta.size
+        token_data.content_received = True
+        token_data.file_meta = file_meta
+        token_data.actual_size = file_meta.size
 
         return Response.json({"ok": True})
     finally:
@@ -573,24 +586,24 @@ async def upload_complete(request, datasette):
     if not token_data:
         return _error("Invalid or expired upload token")
 
-    if token_data["source_slug"] != source_slug:
+    if token_data.source_slug != source_slug:
         return _error("Token does not match this source")
 
-    if not token_data["content_received"]:
+    if not token_data.content_received:
         return _error("File content has not been uploaded yet")
 
-    if token_data["used"]:
+    if token_data.used:
         return _error("This upload token has already been used")
 
     # Mark token as used
-    token_data["used"] = True
+    token_data.used = True
 
-    file_id = token_data["file_id"]
-    file_meta = token_data["file_meta"]
-    filename = token_data["filename"]
-    content_type = token_data["content_type"]
-    path = token_data["path"]
-    actor = token_data["actor"]
+    file_id = token_data.file_id
+    file_meta = token_data.file_meta
+    filename = token_data.filename
+    content_type = token_data.content_type
+    path = token_data.path
+    actor = token_data.actor
 
     # Record in internal database
     db = datasette.get_internal_database()
@@ -608,7 +621,7 @@ async def upload_complete(request, datasette):
             "filename": filename,
             "content_type": file_meta.content_type or content_type,
             "content_hash": file_meta.content_hash,
-            "size": file_meta.size or token_data.get("actual_size"),
+            "size": file_meta.size or token_data.actual_size,
             "uploaded_by": (actor or {}).get("id"),
         },
     )
@@ -708,9 +721,7 @@ async def file_update(request, datasette):
     allowed_fields = {"search_text"}
     invalid_fields = set(update.keys()) - allowed_fields
     if invalid_fields:
-        return _error(
-            f"Cannot update fields: {', '.join(sorted(invalid_fields))}"
-        )
+        return _error(f"Cannot update fields: {', '.join(sorted(invalid_fields))}")
 
     if not update:
         return _error("No valid fields to update")
@@ -753,9 +764,7 @@ async def _get_file_record(datasette, file_id):
 async def file_info(request, datasette):
     """GET /-/files/{file_id} - HTML info page about a file."""
     if request.method != "GET":
-        return Response.text(
-            "Method not allowed", status=405, headers={"Allow": "GET"}
-        )
+        return Response.text("Method not allowed", status=405, headers={"Allow": "GET"})
 
     file_id = request.url_vars["file_id"]
     row = await _get_file_record(datasette, file_id)
@@ -834,15 +843,12 @@ class _StreamingFileResponse:
                 "type": "http.response.start",
                 "status": 200,
                 "headers": [
-                    [k.encode("latin1"), v.encode("latin1")]
-                    for k, v in headers.items()
+                    [k.encode("latin1"), v.encode("latin1")] for k, v in headers.items()
                 ],
             }
         )
         async for chunk in self.storage.stream_file(self.path):
-            await send(
-                {"type": "http.response.body", "body": chunk, "more_body": True}
-            )
+            await send({"type": "http.response.body", "body": chunk, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
