@@ -371,7 +371,6 @@ class StorageCapabilities:
     can_delete: bool = False
     can_list: bool = False
     can_generate_signed_urls: bool = False
-    can_generate_thumbnails: bool = False
     requires_proxy_download: bool = False
     max_file_size: Optional[int] = None
 ```
@@ -380,7 +379,6 @@ class StorageCapabilities:
 - `can_delete`: The backend can delete files via `delete_file()`
 - `can_list`: The backend can list files via `list_files()`
 - `can_generate_signed_urls`: The backend can produce expiring download URLs via `download_url()` — if `True`, file downloads will use a 302 redirect to the signed URL instead of proxying content through Datasette
-- `can_generate_thumbnails`: The backend can produce thumbnail URLs via `thumbnail_url()`
 - `requires_proxy_download`: File content must be proxied through Datasette (e.g. filesystem storage) rather than redirecting to an external URL
 - `max_file_size`: Optional maximum file size in bytes (defaults to 100 MB)
 
@@ -478,8 +476,6 @@ async def receive_upload(self, path: str, stream: AsyncIterator[bytes], content_
 **`read_bytes(path, num_bytes)`** — Return up to `num_bytes` from the start of a file. The default implementation reads the full file with `read_file()` and slices it. Storage backends should override this to avoid downloading entire files — for example, S3 backends can use an HTTP `Range` header to fetch only the requested bytes. Used by the file info page to provide `preview_bytes` to `file_actions` hooks.
 
 **`stream_file(path)`** — Yield file content in chunks as an async iterator. This method is used by the file download endpoint to stream files to clients without loading the entire file into memory. The default implementation reads the entire file with `read_file()` and yields it as a single chunk — storage backends should override this to yield smaller chunks for efficient memory usage with large files.
-
-**`thumbnail_url(path, width, height)`** — Return a URL for a thumbnail of the file, or `None`.
 
 ### Full example: S3 storage plugin
 

@@ -38,7 +38,6 @@ class StorageCapabilities:
     can_delete: bool = False
     can_list: bool = False
     can_generate_signed_urls: bool = False
-    can_generate_thumbnails: bool = False
     requires_proxy_download: bool = False
     max_file_size: Optional[int] = None
 
@@ -127,10 +126,6 @@ class Storage(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support deletion"
         )
-
-    async def thumbnail_url(self, path: str, width: int, height: int) -> Optional[str]:
-        """Return a URL for a thumbnail, or None."""
-        return None
 
 
 class ThumbnailGenerator(ABC):
