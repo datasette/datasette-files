@@ -2,7 +2,7 @@ import io
 import json
 import pytest
 from PIL import Image
-from conftest import _upload_file
+from conftest import _make_datasette, _upload_file
 
 # --- Group 1: SVG icon generation ---
 
@@ -150,6 +150,13 @@ def _make_test_jpeg(width=400, height=300):
     return buf.getvalue()
 
 
+def _make_test_png(width=64, height=48):
+    img = Image.new("RGBA", (width, height), color=(0, 128, 255, 180))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @pytest.mark.asyncio
 async def test_thumbnail_endpoint_for_image(datasette_browse_allowed, upload_dir):
     ds = datasette_browse_allowed
@@ -166,6 +173,67 @@ async def test_thumbnail_endpoint_for_image(datasette_browse_allowed, upload_dir
     thumb = Image.open(io.BytesIO(response.content))
     assert thumb.width <= 200
     assert thumb.height <= 200
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_endpoint_uses_registered_non_image_generator(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    thumbnail_bytes = _make_test_png(32, 24)
+
+    class PdfThumbnailPlugin:
+        __name__ = "PdfThumbnailPlugin"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class PdfThumbnailGenerator:
+                name = "fake-pdf"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/pdf"
+
+                async def generate(
+                    self,
+                    file_bytes,
+                    content_type,
+                    filename,
+                    max_width=200,
+                    max_height=200,
+                ):
+                    return thumbnail_bytes, "image/png"
+
+            return [PdfThumbnailGenerator()]
+
+    pm.register(PdfThumbnailPlugin(), name="undo_PdfThumbnailPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+        )
+        data = await _upload_file(
+            ds, filename="doc.pdf", content=b"%PDF-fake", content_type="application/pdf"
+        )
+        file_id = data["file_id"]
+
+        response = await ds.client.get(f"/-/files/{file_id}/thumbnail")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == thumbnail_bytes
+
+        db = ds.get_internal_database()
+        row = (
+            await db.execute(
+                "SELECT generator, width, height FROM datasette_files_thumbnails WHERE file_id = ?",
+                [file_id],
+            )
+        ).first()
+        assert row is not None
+        assert row["generator"] == "fake-pdf"
+        assert row["width"] == 32
+        assert row["height"] == 24
+    finally:
+        pm.unregister(name="undo_PdfThumbnailPlugin")
 
 
 @pytest.mark.asyncio
@@ -219,6 +287,66 @@ async def test_thumbnail_generated_on_upload(datasette_browse_allowed, upload_di
         )
     ).first()
     assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_generated_on_upload_for_non_image_generator(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    thumbnail_bytes = _make_test_png(40, 30)
+
+    class PdfThumbnailPlugin:
+        __name__ = "PdfThumbnailPluginForUpload"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class PdfThumbnailGenerator:
+                name = "fake-pdf"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/pdf"
+
+                async def generate(
+                    self,
+                    file_bytes,
+                    content_type,
+                    filename,
+                    max_width=200,
+                    max_height=200,
+                ):
+                    return thumbnail_bytes, "image/png"
+
+            return [PdfThumbnailGenerator()]
+
+    pm.register(PdfThumbnailPlugin(), name="undo_PdfThumbnailPluginForUpload")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+        )
+        data = await _upload_file(
+            ds,
+            filename="eager.pdf",
+            content=b"%PDF-upload",
+            content_type="application/pdf",
+        )
+        file_id = data["file_id"]
+
+        db = ds.get_internal_database()
+        row = (
+            await db.execute(
+                "SELECT generator, content_type, width, height FROM datasette_files_thumbnails WHERE file_id = ?",
+                [file_id],
+            )
+        ).first()
+        assert row is not None
+        assert row["generator"] == "fake-pdf"
+        assert row["content_type"] == "image/png"
+        assert row["width"] == 40
+        assert row["height"] == 30
+    finally:
+        pm.unregister(name="undo_PdfThumbnailPluginForUpload")
 
 
 # --- Group 6: Deletion cleanup ---

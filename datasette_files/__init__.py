@@ -831,12 +831,11 @@ async def upload_complete(request, datasette):
     # Fetch the created record for the response
     row = await _get_file_record(datasette, file_id)
 
-    # Eagerly generate thumbnail for image uploads
-    if (file_meta.content_type or content_type or "").startswith("image/"):
-        try:
-            await _get_or_generate_thumbnail(datasette, file_id, row)
-        except Exception:
-            pass  # Non-fatal: thumbnail will be generated lazily on first request
+    # Eagerly generate thumbnails when a registered generator can handle the file.
+    try:
+        await _get_or_generate_thumbnail(datasette, file_id, row)
+    except Exception:
+        pass  # Non-fatal: thumbnail will be generated lazily on first request
 
     return Response.json(
         {
@@ -1073,15 +1072,13 @@ async def file_thumbnail(request, datasette):
 
     content_type = row["content_type"] or ""
 
-    # For image files, try to get/generate a real thumbnail
-    if content_type.startswith("image/"):
-        result = await _get_or_generate_thumbnail(datasette, file_id, row)
-        if result:
-            thumb_bytes, thumb_content_type = result
-            return Response(
-                body=thumb_bytes,
-                content_type=thumb_content_type,
-            )
+    result = await _get_or_generate_thumbnail(datasette, file_id, row)
+    if result:
+        thumb_bytes, thumb_content_type = result
+        return Response(
+            body=thumb_bytes,
+            content_type=thumb_content_type,
+        )
 
     # For non-image files (or if generation failed), return SVG icon
     svg = _generate_file_icon_svg(row["filename"], content_type)
@@ -1113,11 +1110,24 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
 
     storage = _sources[source_slug]
 
+    matching_generators = []
     for generator in _thumbnail_generators:
-        if not await generator.can_generate(content_type, filename):
-            continue
         try:
-            file_bytes = await storage.read_file(row["path"])
+            if await generator.can_generate(content_type, filename):
+                matching_generators.append(generator)
+        except Exception:
+            continue
+
+    if not matching_generators:
+        return None
+
+    try:
+        file_bytes = await storage.read_file(row["path"])
+    except Exception:
+        return None
+
+    for generator in matching_generators:
+        try:
             result = await generator.generate(
                 file_bytes, content_type, filename, max_width=200, max_height=200
             )

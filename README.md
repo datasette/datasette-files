@@ -163,7 +163,8 @@ Returns the registered file:
     "uploaded_by": null,
     "created_at": "2026-03-13 23:23:24",
     "url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq",
-    "download_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/download"
+    "download_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/download",
+    "thumbnail_url": "/-/files/df-01j5a3b4c5d6e7f8g9h0jkmnpq/thumbnail"
   }
 }
 ```
@@ -232,7 +233,7 @@ This returns each source's `slug`, `storage_type`, and capability flags such as 
 
 `datasette-files` uses Datasette's [column_types system](https://docs.datasette.io/en/latest/configuration.html#column-types) to decide which columns should be treated as files.
 
-Columns assigned the `file` column type will render `df-...` file IDs as rich file references in Datasette's table and row views. The plugin registers a `file` column type and uses that assignment to replace matching values with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail for images.
+Columns assigned the `file` column type will render `df-...` file IDs as rich file references in Datasette's table and row views. The plugin registers a `file` column type and uses that assignment to replace matching values with a `<datasette-file>` web component that displays the filename, content type, and a thumbnail. Built-in Pillow thumbnails are used for common raster image formats, plugins can register thumbnail generators for any file type, and files with no generated thumbnail fall back to an SVG file-type icon.
 
 The `file` column type is intended for `TEXT` columns. You can assign it in `datasette.yaml` like this:
 
@@ -267,6 +268,7 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | `POST` | `/-/files/{file_id}/-/update` | Update file metadata |
 | `GET` | `/-/files/{file_id}` | File info page (HTML) |
 | `GET` | `/-/files/{file_id}.json` | File metadata (JSON) |
+| `GET` | `/-/files/{file_id}/thumbnail` | Generated thumbnail or SVG file-type icon |
 | `GET` | `/-/files/{file_id}/download` | Download file content |
 | `GET` | `/-/files/import/{file_id}` | CSV import preview page |
 | `POST` | `/-/files/import/{file_id}` | Start CSV import job |
@@ -335,7 +337,7 @@ datasette-files uses a plugin hook to allow other Datasette plugins to provide c
 
 ### How it works
 
-The hook is called at startup. Your plugin returns a list of `Storage` subclasses (not instances). datasette-files handles instantiation, configuration, and lifecycle management.
+Your plugin returns a list of `Storage` subclasses (not instances). datasette-files handles instantiation, configuration, and lifecycle management.
 
 ```python
 from datasette import hookimpl
@@ -351,6 +353,90 @@ When a source in `datasette.yaml` references your storage type, datasette-files 
 1. Instantiate your class (calling `S3Storage()`)
 2. Call `await storage.configure(config, get_secret)` with the source's config dict
 3. Use your storage instance for all file operations on that source
+
+## Plugin hook: `register_thumbnail_generators`
+
+datasette-files uses a second plugin hook to allow plugins to provide thumbnail generators for files. The built-in Pillow generator handles common raster image formats, and other plugins can add generators for PDFs, videos, office documents, or any other file type.
+
+### How it works
+
+Your plugin returns a list of thumbnail generator instances.
+
+```python
+from datasette import hookimpl
+
+@hookimpl
+def register_thumbnail_generators(datasette):
+    from my_plugin.thumbnails import PdfThumbnailGenerator
+    return [PdfThumbnailGenerator()]
+```
+
+When `/-/files/{file_id}/thumbnail` is requested, datasette-files will:
+
+1. Check the internal thumbnail cache table for an existing thumbnail
+2. Ask each registered generator if it can handle the file's `content_type` and `filename`
+3. Read the source file once and try matching generators in order
+4. Cache the first successful thumbnail result in the internal database
+5. Fall back to an SVG file-type icon if no generator returns a thumbnail
+
+The same generation path is also attempted eagerly after uploads complete, so generators can populate the cache before the first thumbnail request.
+
+### The `ThumbnailGenerator` base class
+
+Import the base class from `datasette_files.base`:
+
+```python
+from datasette_files.base import ThumbnailGenerator
+```
+
+Implement these methods:
+
+```python
+class ThumbnailGenerator(ABC):
+    name: str
+
+    async def can_generate(self, content_type: str, filename: str) -> bool:
+        ...
+
+    async def generate(
+        self,
+        file_bytes: bytes,
+        content_type: str,
+        filename: str,
+        max_width: int = 200,
+        max_height: int = 200,
+    ) -> Optional[tuple[bytes, str]]:
+        ...
+```
+
+- `name`: Short identifier stored alongside generated thumbnails in the cache table
+- `can_generate(content_type, filename)`: Return `True` if this generator can handle the file
+- `generate(file_bytes, content_type, filename, max_width, max_height)`: Return `(thumbnail_bytes, thumbnail_content_type)` or `None`
+
+### Example: PDF thumbnail generator
+
+```python
+from datasette import hookimpl
+from datasette_files.base import ThumbnailGenerator
+
+
+class PdfThumbnailGenerator(ThumbnailGenerator):
+    name = "pdf-preview"
+
+    async def can_generate(self, content_type, filename):
+        return content_type == "application/pdf" or filename.lower().endswith(".pdf")
+
+    async def generate(
+        self, file_bytes, content_type, filename, max_width=200, max_height=200
+    ):
+        # Render the first page and return PNG or JPEG bytes
+        return thumbnail_bytes, "image/png"
+
+
+@hookimpl
+def register_thumbnail_generators(datasette):
+    return [PdfThumbnailGenerator()]
+```
 
 ### The `Storage` base class
 
