@@ -15,33 +15,7 @@
         <tr>
             <td>
                 <a href="{{ urls.path('/-/files/' ~ file.id) }}">
-                {% if file.content_type and file.content_type.startswith("image/") %}
-                    <img src="{{ urls.path('/-/files/' ~ file.id ~ '/download') }}" alt="{{ file.filename }}" loading="lazy" style="width:60px;height:40px;object-fit:contain;vertical-align:middle;border-radius:2px;margin-right:6px;">
-                {% else %}
-                    {% set ext = file.filename.rsplit('.', 1)[-1].upper() if '.' in file.filename else '?' %}
-                    {% if ext == 'CSV' or file.content_type == 'text/csv' %}
-                        {% set icon_label = 'CSV' %}{% set icon_badge = '#2E7D32' %}{% set icon_bg = '#EEF7EE' %}{% set icon_stroke = '#7AB87E' %}{% set icon_fold = '#C4E0C5' %}
-                    {% elif ext == 'PDF' or file.content_type == 'application/pdf' %}
-                        {% set icon_label = 'PDF' %}{% set icon_badge = '#E05050' %}{% set icon_bg = '#FDF0EE' %}{% set icon_stroke = '#D4837A' %}{% set icon_fold = '#F5C4C0' %}
-                    {% elif ext in ('JSON', 'GEOJSON') or file.content_type == 'application/json' %}
-                        {% set icon_label = ext %}{% set icon_badge = '#F59E0B' %}{% set icon_bg = '#FFFBEB' %}{% set icon_stroke = '#D4A34A' %}{% set icon_fold = '#FDE68A' %}
-                    {% elif ext in ('XLS', 'XLSX') %}
-                        {% set icon_label = ext %}{% set icon_badge = '#1D6F42' %}{% set icon_bg = '#EDF5F0' %}{% set icon_stroke = '#6DA88A' %}{% set icon_fold = '#B7DAC5' %}
-                    {% elif ext in ('DOC', 'DOCX') %}
-                        {% set icon_label = ext %}{% set icon_badge = '#2B579A' %}{% set icon_bg = '#EEF1F7' %}{% set icon_stroke = '#7B8FB8' %}{% set icon_fold = '#BDC9E0' %}
-                    {% elif ext in ('TXT', 'MD', 'RST') or (file.content_type and file.content_type.startswith('text/')) %}
-                        {% set icon_label = ext %}{% set icon_badge = '#6B7280' %}{% set icon_bg = '#F3F4F6' %}{% set icon_stroke = '#9CA3AF' %}{% set icon_fold = '#D1D5DB' %}
-                    {% elif ext in ('ZIP', 'GZ', 'TAR', 'BZ2', '7Z', 'RAR') %}
-                        {% set icon_label = ext %}{% set icon_badge = '#7C3AED' %}{% set icon_bg = '#F3EEFF' %}{% set icon_stroke = '#A78BDB' %}{% set icon_fold = '#D4BFFA' %}
-                    {% elif ext in ('MP4', 'MOV', 'AVI', 'MKV', 'WEBM') %}
-                        {% set icon_label = ext %}{% set icon_badge = '#DC2626' %}{% set icon_bg = '#FEF2F2' %}{% set icon_stroke = '#D48A8A' %}{% set icon_fold = '#FECACA' %}
-                    {% elif ext in ('MP3', 'WAV', 'OGG', 'FLAC', 'M4A') %}
-                        {% set icon_label = ext %}{% set icon_badge = '#9333EA' %}{% set icon_bg = '#FAF5FF' %}{% set icon_stroke = '#B48AD8' %}{% set icon_fold = '#DDD6FE' %}
-                    {% else %}
-                        {% set icon_label = ext %}{% set icon_badge = '#6B7280' %}{% set icon_bg = '#F9FAFB' %}{% set icon_stroke = '#9CA3AF' %}{% set icon_fold = '#E5E7EB' %}
-                    {% endif %}
-                    {% include "_file_icon.html" %}
-                {% endif %}
+                <img src="{{ urls.path('/-/files/' ~ file.id ~ '/thumbnail') }}" alt="{{ file.filename }}" loading="lazy" style="width:60px;height:40px;object-fit:contain;vertical-align:middle;border-radius:2px;margin-right:6px;">
                     {{ file.filename }}
                 </a>
             </td>

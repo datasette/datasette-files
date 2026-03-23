@@ -300,12 +300,10 @@ export function openFilePicker({ column, currentFileId }) {
           li.setAttribute("aria-selected", "true");
         }
 
-        const isImage =
-          f.content_type && f.content_type.startsWith("image/");
-        if (isImage) {
+        {
           const img = document.createElement("img");
           img.className = "dsf-picker-thumb";
-          img.src = `/-/files/${f.id}/download`;
+          img.src = `/-/files/${f.id}/thumbnail`;
           img.alt = f.filename;
           img.loading = "lazy";
           img.onerror = () => img.remove();

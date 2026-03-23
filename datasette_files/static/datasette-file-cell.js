@@ -182,24 +182,17 @@ class DatasetteFile extends HTMLElement {
     this.innerHTML = "";
     this.title = `${meta.filename} (${_formatSize(meta.size)})`;
 
-    const isImage = meta.content_type && meta.content_type.startsWith("image/");
-
     const link = document.createElement("a");
     link.href = meta.info_url;
 
-    if (isImage) {
+    {
       const img = document.createElement("img");
-      img.src = meta.download_url;
+      img.src = meta.thumbnail_url;
       img.alt = meta.filename;
       img.loading = "lazy";
       img.style.cssText = "width:60px;height:40px;object-fit:contain;vertical-align:middle;border-radius:2px;margin-right:6px;";
       img.onerror = () => { img.remove(); };
       link.appendChild(img);
-    } else {
-      const style = _getFileIconStyle(meta.filename, meta.content_type);
-      const iconSpan = document.createElement("span");
-      iconSpan.innerHTML = _makeFileIconSvg(style);
-      link.appendChild(iconSpan.firstChild);
     }
 
     link.appendChild(document.createTextNode(meta.filename));
