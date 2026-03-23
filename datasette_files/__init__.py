@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import string
 import time
 from dataclasses import dataclass, field
 from html import escape
@@ -616,6 +617,49 @@ def _clean_expired_tokens():
         del _upload_tokens[t]
 
 
+_ALNUM = set(string.ascii_letters + string.digits)
+
+
+def _ext_from_content_type(content_type: str) -> str:
+    """Return a file extension (without dot) for common content types, or ''."""
+    return {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/svg+xml": "svg",
+        "image/bmp": "bmp",
+        "image/tiff": "tiff",
+        "text/plain": "txt",
+        "text/html": "html",
+        "text/css": "css",
+        "text/csv": "csv",
+        "text/tab-separated-values": "tsv",
+        "application/pdf": "pdf",
+        "application/json": "json",
+        "application/zip": "zip",
+        "application/gzip": "gz",
+        "application/xml": "xml",
+        "text/xml": "xml",
+    }.get(content_type, "dat")
+
+
+def _safe_download_filename(filename: str, content_type: str = "") -> str:
+    """Sanitize filename for Content-Disposition: only a-zA-Z0-9 plus .ext."""
+    if "." in filename:
+        name, ext = filename.rsplit(".", 1)
+        ext = "".join(c for c in ext if c in _ALNUM)
+    else:
+        name = filename
+        ext = ""
+    name = "".join(c for c in name if c in _ALNUM)
+    if not name:
+        name = "download"
+    if not ext and content_type:
+        ext = _ext_from_content_type(content_type)
+    return f"{name}.{ext}" if ext else name
+
+
 def _error(message, status=400):
     return Response.json({"ok": False, "errors": [message]}, status=status)
 
@@ -1051,9 +1095,11 @@ class _StreamingFileResponse:
         self.size = size
 
     async def asgi_send(self, send):
+        disposition = f'attachment; filename="{_safe_download_filename(self.filename, self.content_type)}"'
         headers = {
             "content-type": self.content_type,
-            "content-disposition": f'inline; filename="{self.filename}"',
+            "content-disposition": disposition,
+            "x-content-type-options": "nosniff",
         }
         if self.size is not None:
             headers["content-length"] = str(self.size)
