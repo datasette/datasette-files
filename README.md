@@ -383,10 +383,10 @@ The same generation path is also attempted eagerly after uploads complete, so ge
 
 ### The `ThumbnailGenerator` base class
 
-Import the base class from `datasette_files.base`:
+Import the base class and result dataclass from `datasette_files.base`:
 
 ```python
-from datasette_files.base import ThumbnailGenerator
+from datasette_files.base import ThumbnailGenerator, ThumbnailResult
 ```
 
 Implement these methods:
@@ -405,19 +405,30 @@ class ThumbnailGenerator(ABC):
         filename: str,
         max_width: int = 200,
         max_height: int = 200,
-    ) -> Optional[tuple[bytes, str]]:
+    ) -> Optional[ThumbnailResult]:
         ...
+```
+
+`generate()` returns a `ThumbnailResult` dataclass or `None`:
+
+```python
+@dataclass
+class ThumbnailResult:
+    thumbnail: bytes
+    content_type: str
+    width: int
+    height: int
 ```
 
 - `name`: Short identifier stored alongside generated thumbnails in the cache table
 - `can_generate(content_type, filename)`: Return `True` if this generator can handle the file
-- `generate(file_bytes, content_type, filename, max_width, max_height)`: Return `(thumbnail_bytes, thumbnail_content_type)` or `None`
+- `generate(file_bytes, content_type, filename, max_width, max_height)`: Return a `ThumbnailResult` or `None`
 
 ### Example: PDF thumbnail generator
 
 ```python
 from datasette import hookimpl
-from datasette_files.base import ThumbnailGenerator
+from datasette_files.base import ThumbnailGenerator, ThumbnailResult
 
 
 class PdfThumbnailGenerator(ThumbnailGenerator):
@@ -430,7 +441,12 @@ class PdfThumbnailGenerator(ThumbnailGenerator):
         self, file_bytes, content_type, filename, max_width=200, max_height=200
     ):
         # Render the first page and return PNG or JPEG bytes
-        return thumbnail_bytes, "image/png"
+        return ThumbnailResult(
+            thumbnail=thumbnail_bytes,
+            content_type="image/png",
+            width=width,
+            height=height,
+        )
 
 
 @hookimpl

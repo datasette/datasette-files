@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, AsyncIterator, Tuple
+from typing import Optional, AsyncIterator
 
 
 @dataclass
@@ -128,6 +128,16 @@ class Storage(ABC):
         )
 
 
+@dataclass
+class ThumbnailResult:
+    """Result of thumbnail generation."""
+
+    thumbnail: bytes
+    content_type: str
+    width: int
+    height: int
+
+
 class ThumbnailGenerator(ABC):
     """Abstract base for thumbnail generators."""
 
@@ -146,6 +156,6 @@ class ThumbnailGenerator(ABC):
         filename: str,
         max_width: int = 200,
         max_height: int = 200,
-    ) -> Optional[Tuple[bytes, str]]:
-        """Generate a thumbnail. Returns (thumbnail_bytes, content_type) or None."""
+    ) -> Optional[ThumbnailResult]:
+        """Generate a thumbnail, or return None."""
         ...

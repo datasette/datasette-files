@@ -1,7 +1,7 @@
 import io
-from typing import Optional, Tuple
+from typing import Optional
 
-from .base import ThumbnailGenerator
+from .base import ThumbnailGenerator, ThumbnailResult
 
 SUPPORTED_CONTENT_TYPES = {
     "image/jpeg",
@@ -26,7 +26,7 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
         filename: str,
         max_width: int = 200,
         max_height: int = 200,
-    ) -> Optional[Tuple[bytes, str]]:
+    ) -> Optional[ThumbnailResult]:
         try:
             from PIL import Image
         except ImportError:
@@ -46,6 +46,11 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
                 out_content_type = "image/jpeg"
             buf = io.BytesIO()
             img.save(buf, format=out_format, quality=85)
-            return buf.getvalue(), out_content_type
+            return ThumbnailResult(
+                thumbnail=buf.getvalue(),
+                content_type=out_content_type,
+                width=img.size[0],
+                height=img.size[1],
+            )
         except Exception:
             return None

@@ -1139,26 +1139,20 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
                 file_bytes, content_type, filename, max_width=200, max_height=200
             )
             if result:
-                thumb_bytes, thumb_content_type = result
-                from PIL import Image as PILImage
-                import io as _io
-
-                thumb_img = PILImage.open(_io.BytesIO(thumb_bytes))
-                width, height = thumb_img.size
                 await db.execute_write(
                     """INSERT OR REPLACE INTO datasette_files_thumbnails
                        (file_id, thumbnail, content_type, width, height, generator)
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     [
                         file_id,
-                        thumb_bytes,
-                        thumb_content_type,
-                        width,
-                        height,
+                        result.thumbnail,
+                        result.content_type,
+                        result.width,
+                        result.height,
                         generator.name,
                     ],
                 )
-                return thumb_bytes, thumb_content_type
+                return result.thumbnail, result.content_type
         except Exception:
             continue
 
