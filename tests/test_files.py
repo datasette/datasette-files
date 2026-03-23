@@ -1644,6 +1644,84 @@ async def test_import_post_requires_csrf_token(upload_dir):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "permissions,create_table,expected_status,expected_error",
+    [
+        (
+            {"files-browse": True, "files-upload": True},
+            False,
+            403,
+            "create-table",
+        ),
+        (
+            {"files-browse": True, "files-upload": True, "create-table": True},
+            False,
+            403,
+            "insert-row",
+        ),
+        (
+            {
+                "files-browse": True,
+                "files-upload": True,
+                "create-table": True,
+                "insert-row": True,
+            },
+            True,
+            400,
+            "already exists",
+        ),
+    ],
+    ids=["no-create-table", "no-insert-row", "table-already-exists"],
+)
+async def test_import_permission_checks(
+    tmp_path, permissions, create_table, expected_status, expected_error
+):
+    """POST /-/files/import/{file_id} checks create-table, insert-row, and table existence."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+    db_path = str(tmp_path / "data.db")
+
+    if create_table:
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE people (name TEXT, age INTEGER)")
+        conn.close()
+    else:
+        _create_sqlite_database(db_path)
+
+    ds = Datasette(
+        [db_path],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-uploads": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": permissions,
+        },
+    )
+
+    result = await _upload_file(
+        ds,
+        filename="people.csv",
+        content=b"name,age\nAlice,30\n",
+        content_type="text/csv",
+    )
+
+    response = await ds.client.post(
+        f"/-/files/import/{result['file_id']}",
+        data={"table_name": "people", "database_name": "data"},
+        follow_redirects=False,
+    )
+    assert response.status_code == expected_status
+    assert expected_error in response.json()["error"]
+
+
+@pytest.mark.asyncio
 async def test_import_post_creates_job_and_imports(tmp_path):
     """POST /-/files/import/{file_id} creates import job, imports CSV, and redirects to progress page."""
     import asyncio

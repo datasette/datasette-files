@@ -1836,6 +1836,31 @@ async def import_file_view(request, datasette):
             {"error": f"Database not found: {database_name}"}, status=400
         )
 
+    # Check create-table permission
+    from datasette.resources import DatabaseResource
+
+    if not await datasette.allowed(
+        action="create-table",
+        resource=DatabaseResource(database=database_name),
+        actor=request.actor,
+    ):
+        return Response.json({"error": "Permission denied: create-table"}, status=403)
+
+    # Check insert-row permission
+    if not await datasette.allowed(
+        action="insert-row",
+        resource=DatabaseResource(database=database_name),
+        actor=request.actor,
+    ):
+        return Response.json({"error": "Permission denied: insert-row"}, status=403)
+
+    # Check table does not already exist
+    table_names = await target_db.table_names()
+    if table_name in table_names:
+        return Response.json(
+            {"error": f"Table already exists: {table_name}"}, status=400
+        )
+
     # Create import job record
     internal_db = datasette.get_internal_database()
     file_size = row["size"] or 0

@@ -65,6 +65,8 @@ There are four permission actions, each scoped to a source:
 | `files-edit` | Edit file metadata (e.g. search text) |
 | `files-delete` | Delete files from a source |
 
+CSV/TSV import also requires Datasette's built-in `create-table` and `insert-row` permissions on the target database. See [Built-in CSV import action](#built-in-csv-import-action) for details.
+
 **Grant access to everyone (all sources):**
 
 ```yaml
@@ -330,6 +332,8 @@ datasette-files ships with a built-in `file_actions` implementation that adds an
 1. A preview page showing detected columns and sample rows
 2. A POST endpoint that imports the CSV into a new database table with automatic type detection (integers, floats, and text)
 3. A progress page showing import status
+
+Importing requires `files-browse` permission on the file's source **plus** Datasette's `create-table` and `insert-row` permissions on the target database. The import will be rejected if the target table already exists.
 
 ## Plugin hook: `register_files_storage_types`
 
