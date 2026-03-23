@@ -47,7 +47,7 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
             buf = io.BytesIO()
             img.save(buf, format=out_format, quality=85)
             return ThumbnailResult(
-                thumbnail=buf.getvalue(),
+                thumb_bytes=buf.getvalue(),
                 content_type=out_content_type,
                 width=img.size[0],
                 height=img.size[1],

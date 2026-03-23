@@ -414,7 +414,7 @@ class ThumbnailGenerator(ABC):
 ```python
 @dataclass
 class ThumbnailResult:
-    thumbnail: bytes
+    thumb_bytes: bytes
     content_type: str
     width: int
     height: int
@@ -442,7 +442,7 @@ class PdfThumbnailGenerator(ThumbnailGenerator):
     ):
         # Render the first page and return PNG or JPEG bytes
         return ThumbnailResult(
-            thumbnail=thumbnail_bytes,
+            thumb_bytes=thumbnail_bytes,
             content_type="image/png",
             width=width,
             height=height,

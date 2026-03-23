@@ -90,7 +90,7 @@ async def test_pillow_generates_thumbnail():
     assert result.content_type == "image/jpeg"
     assert result.width <= 200
     assert result.height <= 200
-    thumb = Image.open(io.BytesIO(result.thumbnail))
+    thumb = Image.open(io.BytesIO(result.thumb_bytes))
     assert thumb.width == result.width
     assert thumb.height == result.height
 
@@ -262,7 +262,7 @@ async def test_thumbnail_endpoint_uses_registered_non_image_generator(upload_dir
                     max_height=200,
                 ):
                     return ThumbnailResult(
-                        thumbnail=thumbnail_bytes,
+                        thumb_bytes=thumbnail_bytes,
                         content_type="image/png",
                         width=32,
                         height=24,
@@ -381,7 +381,7 @@ async def test_thumbnail_generated_on_upload_for_non_image_generator(upload_dir)
                     max_height=200,
                 ):
                     return ThumbnailResult(
-                        thumbnail=thumbnail_bytes,
+                        thumb_bytes=thumbnail_bytes,
                         content_type="image/png",
                         width=40,
                         height=30,

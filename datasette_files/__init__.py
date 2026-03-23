@@ -1084,8 +1084,7 @@ async def file_thumbnail(request, datasette):
 
     result = await _get_or_generate_thumbnail(datasette, file_id, row)
     if result:
-        thumb_bytes, thumb_content_type = result
-        return _response_with_etag(request, thumb_bytes, thumb_content_type)
+        return _response_with_etag(request, result.thumb_bytes, result.content_type)
 
     # For non-image files (or if generation failed), return SVG icon
     svg = _generate_file_icon_svg(row["filename"], content_type).encode("utf-8")
@@ -1093,17 +1092,24 @@ async def file_thumbnail(request, datasette):
 
 
 async def _get_or_generate_thumbnail(datasette, file_id, row):
-    """Return (thumbnail_bytes, content_type) or None. Checks cache, generates on miss."""
+    """Return ThumbnailResult or None. Checks cache, generates on miss."""
+    from .base import ThumbnailResult
+
     db = datasette.get_internal_database()
 
     cached = (
         await db.execute(
-            "SELECT thumbnail, content_type FROM datasette_files_thumbnails WHERE file_id = ?",
+            "SELECT thumbnail, content_type, width, height FROM datasette_files_thumbnails WHERE file_id = ?",
             [file_id],
         )
     ).first()
     if cached:
-        return cached["thumbnail"], cached["content_type"]
+        return ThumbnailResult(
+            thumb_bytes=cached["thumbnail"],
+            content_type=cached["content_type"],
+            width=cached["width"],
+            height=cached["height"],
+        )
 
     content_type = row["content_type"] or ""
     filename = row["filename"]
@@ -1142,14 +1148,14 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     [
                         file_id,
-                        result.thumbnail,
+                        result.thumb_bytes,
                         result.content_type,
                         result.width,
                         result.height,
                         generator.name,
                     ],
                 )
-                return result.thumbnail, result.content_type
+                return result
         except Exception:
             continue
 

@@ -132,7 +132,7 @@ class Storage(ABC):
 class ThumbnailResult:
     """Result of thumbnail generation."""
 
-    thumbnail: bytes
+    thumb_bytes: bytes
     content_type: str
     width: int
     height: int
