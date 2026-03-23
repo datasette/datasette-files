@@ -47,6 +47,20 @@ def test_generate_file_icon_svg_escapes_label():
 
 
 @pytest.mark.asyncio
+async def test_pillow_generator_registered_via_hook():
+    """PillowThumbnailGenerator should be registered through the plugin hook,
+    not hardcoded in startup."""
+    from datasette_files import register_thumbnail_generators
+
+    # The function should exist as a hookimpl on the module
+    assert hasattr(register_thumbnail_generators, "datasette_impl")
+    from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
+
+    result = register_thumbnail_generators(datasette=None)
+    assert any(isinstance(g, PillowThumbnailGenerator) for g in result)
+
+
+@pytest.mark.asyncio
 async def test_pillow_can_generate_jpeg():
     from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
 

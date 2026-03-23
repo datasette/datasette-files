@@ -567,10 +567,7 @@ def startup(datasette):
             }
 
         # Collect thumbnail generators
-        from .pillow_thumbnails import PillowThumbnailGenerator
-
         _thumbnail_generators.clear()
-        _thumbnail_generators.append(PillowThumbnailGenerator())
         for hook in pm.hook.register_thumbnail_generators(datasette=datasette):
             result = await await_me_maybe(hook)
             if result:
@@ -1888,6 +1885,13 @@ async def homepage_actions(datasette, actor, request):
                 "description": "Browse and manage uploaded files",
             }
         ]
+
+
+@hookimpl
+def register_thumbnail_generators(datasette):
+    from .pillow_thumbnails import PillowThumbnailGenerator
+
+    return [PillowThumbnailGenerator()]
 
 
 @hookimpl
