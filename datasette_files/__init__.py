@@ -40,6 +40,7 @@ class UploadToken:
 _upload_tokens: dict[str, UploadToken] = {}
 _UPLOAD_TOKEN_TTL = 3600  # 1 hour
 _DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+_MAX_FILENAME_BYTES = 255
 
 pm.add_hookspecs(hookspecs)
 
@@ -462,6 +463,29 @@ def _sanitize_filename(filename):
     filename = filename.replace("/", "_").replace("\\", "_")
     # Remove null bytes
     filename = filename.replace("\x00", "")
+    filename = filename or "unnamed"
+
+    if len(filename.encode("utf-8")) <= _MAX_FILENAME_BYTES:
+        return filename
+
+    stem, dot, ext = filename.rpartition(".")
+    if dot and stem:
+        ext = ext.encode("utf-8")[: _MAX_FILENAME_BYTES - 1].decode(
+            "utf-8", errors="ignore"
+        )
+        stem_budget = _MAX_FILENAME_BYTES - len(ext.encode("utf-8")) - 1
+        if stem_budget > 0:
+            stem = stem.encode("utf-8")[:stem_budget].decode("utf-8", errors="ignore")
+            filename = f"{stem}.{ext}"
+        else:
+            filename = filename.encode("utf-8")[:_MAX_FILENAME_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
+    else:
+        filename = filename.encode("utf-8")[:_MAX_FILENAME_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+
     return filename or "unnamed"
 
 

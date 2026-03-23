@@ -313,3 +313,25 @@ async def test_full_upload_flow_file_on_disk(datasette_all_permissions, upload_d
     download = await ds.client.get(f"/-/files/{file_id}/download")
     assert download.status_code == 200
     assert download.content == file_content
+
+
+@pytest.mark.asyncio
+async def test_overlong_filename_is_truncated(datasette_all_permissions, upload_dir):
+    """Overlong filenames should be truncated to a filesystem-safe length."""
+    ds = datasette_all_permissions
+
+    result = await _upload_file(
+        ds,
+        filename=("A" * 500) + ".txt",
+        content=b"hello",
+        content_type="text/plain",
+    )
+
+    stored_filename = result["filename"]
+    assert stored_filename.endswith(".txt")
+    assert len(stored_filename.encode("utf-8")) <= 255
+
+    file_id = result["file_id"]
+    ulid_part = file_id[3:]
+    expected_path = os.path.join(upload_dir, ulid_part, stored_filename)
+    assert os.path.exists(expected_path)
