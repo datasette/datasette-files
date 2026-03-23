@@ -1,5 +1,4 @@
 import hashlib
-import os
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -19,12 +18,18 @@ class FilesystemStorage(Storage):
     )
 
     async def configure(self, config: dict, get_secret) -> None:
-        self.root = Path(config["root"])
+        self.root = Path(config["root"]).resolve()
         self.max_file_size = config.get("max_file_size")
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _safe_path(self, path: str) -> Path:
+        target = (self.root / path).resolve()
+        if not target.is_relative_to(self.root):
+            raise ValueError(f"Path {path!r} resolves outside storage root")
+        return target
+
     async def get_file_metadata(self, path: str) -> Optional[FileMetadata]:
-        target = self.root / path
+        target = self._safe_path(path)
         if not target.exists():
             return None
         stat = target.stat()
@@ -35,13 +40,13 @@ class FilesystemStorage(Storage):
         )
 
     async def read_file(self, path: str) -> bytes:
-        target = self.root / path
+        target = self._safe_path(path)
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path}")
         return target.read_bytes()
 
     async def stream_file(self, path: str) -> AsyncIterator[bytes]:
-        target = self.root / path
+        target = self._safe_path(path)
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path}")
         with open(target, "rb") as f:
@@ -58,7 +63,7 @@ class FilesystemStorage(Storage):
         limit: int = 100,
     ) -> tuple[list[FileMetadata], Optional[str]]:
         files = []
-        search_root = self.root / prefix if prefix else self.root
+        search_root = self._safe_path(prefix) if prefix else self.root
         for file_path in sorted(search_root.rglob("*")):
             if file_path.is_file():
                 rel_path = str(file_path.relative_to(self.root))
@@ -77,7 +82,7 @@ class FilesystemStorage(Storage):
     async def receive_upload(
         self, path: str, stream, content_type: str
     ) -> FileMetadata:
-        target = self.root / path
+        target = self._safe_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         sha256 = hashlib.sha256()
         size = 0
@@ -96,7 +101,7 @@ class FilesystemStorage(Storage):
         )
 
     async def delete_file(self, path: str) -> None:
-        target = self.root / path
+        target = self._safe_path(path)
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path}")
         target.unlink()
