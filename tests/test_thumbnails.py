@@ -111,6 +111,27 @@ async def test_thumbnail_endpoint_for_text_file(datasette_browse_allowed, upload
 
 
 @pytest.mark.asyncio
+async def test_thumbnail_endpoint_for_text_file_supports_etag(
+    datasette_browse_allowed, upload_dir
+):
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="readme.txt", content=b"hello")
+    file_id = data["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}/thumbnail")
+    assert response.status_code == 200
+    assert "etag" in response.headers
+    etag = response.headers["etag"]
+
+    response_304 = await ds.client.get(
+        f"/-/files/{file_id}/thumbnail", headers={"if-none-match": etag}
+    )
+    assert response_304.status_code == 304
+    assert response_304.headers["etag"] == etag
+    assert response_304.text == ""
+
+
+@pytest.mark.asyncio
 async def test_thumbnail_endpoint_for_pdf(datasette_browse_allowed, upload_dir):
     ds = datasette_browse_allowed
     data = await _upload_file(
@@ -173,6 +194,30 @@ async def test_thumbnail_endpoint_for_image(datasette_browse_allowed, upload_dir
     thumb = Image.open(io.BytesIO(response.content))
     assert thumb.width <= 200
     assert thumb.height <= 200
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_endpoint_for_image_supports_etag(
+    datasette_browse_allowed, upload_dir
+):
+    ds = datasette_browse_allowed
+    jpeg_bytes = _make_test_jpeg()
+    data = await _upload_file(
+        ds, filename="photo.jpg", content=jpeg_bytes, content_type="image/jpeg"
+    )
+    file_id = data["file_id"]
+
+    response = await ds.client.get(f"/-/files/{file_id}/thumbnail")
+    assert response.status_code == 200
+    assert "etag" in response.headers
+    etag = response.headers["etag"]
+
+    response_304 = await ds.client.get(
+        f"/-/files/{file_id}/thumbnail", headers={"if-none-match": etag}
+    )
+    assert response_304.status_code == 304
+    assert response_304.headers["etag"] == etag
+    assert response_304.text == ""
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import time
@@ -622,6 +623,18 @@ def _error(message, status=400):
     return Response.json({"ok": False, "errors": [message]}, status=status)
 
 
+def _etag_for_bytes(content: bytes) -> str:
+    return f'"{hashlib.md5(content).hexdigest()}"'
+
+
+def _response_with_etag(request, body: bytes, content_type: str):
+    etag = _etag_for_bytes(body)
+    headers = {"ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(body=b"", status=304, headers=headers)
+    return Response(body=body, content_type=content_type, headers=headers)
+
+
 async def _check_upload_permission_json(datasette, request, source_slug):
     """Check files-upload permission, return error Response or None."""
     allowed = await datasette.allowed(
@@ -1075,17 +1088,11 @@ async def file_thumbnail(request, datasette):
     result = await _get_or_generate_thumbnail(datasette, file_id, row)
     if result:
         thumb_bytes, thumb_content_type = result
-        return Response(
-            body=thumb_bytes,
-            content_type=thumb_content_type,
-        )
+        return _response_with_etag(request, thumb_bytes, thumb_content_type)
 
     # For non-image files (or if generation failed), return SVG icon
-    svg = _generate_file_icon_svg(row["filename"], content_type)
-    return Response(
-        body=svg,
-        content_type="image/svg+xml",
-    )
+    svg = _generate_file_icon_svg(row["filename"], content_type).encode("utf-8")
+    return _response_with_etag(request, svg, "image/svg+xml")
 
 
 async def _get_or_generate_thumbnail(datasette, file_id, row):
