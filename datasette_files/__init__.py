@@ -1975,7 +1975,7 @@ def skip_csrf(datasette, scope):
     if scope["type"] != "http":
         return False
     path = scope["path"]
-    if path.startswith("/-/files/upload/") or path.startswith("/-/files/import/"):
+    if path.startswith("/-/files/upload/"):
         return True
     # Match /-/files/{file_id}/-/delete and /-/files/{file_id}/-/update
     if _FILE_ID_RE.match(path.split("/")[-2] if path.count("/") >= 4 else ""):

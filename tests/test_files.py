@@ -1613,6 +1613,37 @@ async def test_import_preview_get_404_for_missing_file(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_import_post_requires_csrf_token(upload_dir):
+    """POST /-/files/import/{file_id} without a CSRF token should return 403."""
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    result = await _upload_file(
+        ds,
+        filename="data.csv",
+        content=b"name,age\nAlice,30\n",
+        content_type="text/csv",
+    )
+    file_id = result["file_id"]
+
+    # GET the page first to obtain the CSRF cookie
+    get_response = await ds.client.get(f"/-/files/import/{file_id}")
+    assert get_response.status_code == 200
+    csrf_cookie = get_response.cookies.get("ds_csrftoken")
+    assert csrf_cookie, "Expected ds_csrftoken cookie from GET"
+
+    # POST with the cookie but without the csrftoken form field
+    response = await ds.client.post(
+        f"/-/files/import/{file_id}",
+        data={"table_name": "data", "database_name": "data"},
+        cookies={"ds_csrftoken": csrf_cookie},
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_import_post_creates_job_and_imports(tmp_path):
     """POST /-/files/import/{file_id} creates import job, imports CSV, and redirects to progress page."""
     import asyncio
