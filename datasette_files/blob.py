@@ -4,16 +4,26 @@ from typing import AsyncIterator, Optional
 
 from .base import FileMetadata, Storage, StorageCapabilities
 
-CREATE_BLOB_TABLE_SQL = """
+CHUNK_SIZE = 512 * 1024  # 512 KB
+
+CREATE_BLOB_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS datasette_files_blobs (
     source_slug TEXT NOT NULL,
     path TEXT NOT NULL,
-    content BLOB NOT NULL,
     content_type TEXT,
     content_hash TEXT,
     size INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (source_slug, path)
+);
+
+CREATE TABLE IF NOT EXISTS datasette_files_blob_chunks (
+    source_slug TEXT NOT NULL,
+    path TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    PRIMARY KEY (source_slug, path, chunk_index),
+    FOREIGN KEY (source_slug, path) REFERENCES datasette_files_blobs(source_slug, path)
 );
 """
 
@@ -21,7 +31,10 @@ CREATE TABLE IF NOT EXISTS datasette_files_blobs (
 class BlobStorage(Storage):
     """Built-in storage backend that stores file content as blobs in the
     Datasette internal database.  Requires no external configuration — just
-    set ``storage: blob`` in your source definition."""
+    set ``storage: blob`` in your source definition.
+
+    File content is split into 512 KB chunks so that large files can be
+    streamed without loading the entire content into memory."""
 
     storage_type = "blob"
     capabilities = StorageCapabilities(
@@ -38,7 +51,7 @@ class BlobStorage(Storage):
 
     async def configure(self, config: dict, get_secret) -> None:
         db = self.datasette.get_internal_database()
-        await db.execute_write_script(CREATE_BLOB_TABLE_SQL)
+        await db.execute_write_script(CREATE_BLOB_TABLES_SQL)
 
     def _db(self):
         return self.datasette.get_internal_database()
@@ -62,31 +75,54 @@ class BlobStorage(Storage):
         )
 
     async def read_file(self, path: str) -> bytes:
-        row = (
+        rows = (
             await self._db().execute(
-                "SELECT content FROM datasette_files_blobs WHERE source_slug = ? AND path = ?",
+                "SELECT data FROM datasette_files_blob_chunks "
+                "WHERE source_slug = ? AND path = ? ORDER BY chunk_index",
                 [self.source_slug, path],
             )
-        ).first()
-        if row is None:
-            raise FileNotFoundError(f"File not found: {path}")
-        return row["content"]
+        ).rows
+        if not rows:
+            # Distinguish "no chunks" from "file doesn't exist"
+            meta = await self.get_file_metadata(path)
+            if meta is None:
+                raise FileNotFoundError(f"File not found: {path}")
+            return b""
+        return b"".join(row["data"] for row in rows)
 
     async def read_bytes(self, path: str, num_bytes: int = 2048) -> bytes:
-        row = (
+        # Only fetch enough chunks to cover the requested bytes
+        chunks_needed = (num_bytes + CHUNK_SIZE - 1) // CHUNK_SIZE
+        rows = (
             await self._db().execute(
-                "SELECT substr(content, 1, ?) AS head FROM datasette_files_blobs "
-                "WHERE source_slug = ? AND path = ?",
-                [num_bytes, self.source_slug, path],
+                "SELECT data FROM datasette_files_blob_chunks "
+                "WHERE source_slug = ? AND path = ? ORDER BY chunk_index LIMIT ?",
+                [self.source_slug, path, chunks_needed],
             )
-        ).first()
-        if row is None:
-            raise FileNotFoundError(f"File not found: {path}")
-        return row["head"]
+        ).rows
+        if not rows:
+            meta = await self.get_file_metadata(path)
+            if meta is None:
+                raise FileNotFoundError(f"File not found: {path}")
+            return b""
+        content = b"".join(row["data"] for row in rows)
+        return content[:num_bytes]
 
     async def stream_file(self, path: str) -> AsyncIterator[bytes]:
-        content = await self.read_file(path)
-        yield content
+        rows = (
+            await self._db().execute(
+                "SELECT data FROM datasette_files_blob_chunks "
+                "WHERE source_slug = ? AND path = ? ORDER BY chunk_index",
+                [self.source_slug, path],
+            )
+        ).rows
+        if not rows:
+            meta = await self.get_file_metadata(path)
+            if meta is None:
+                raise FileNotFoundError(f"File not found: {path}")
+            return
+        for row in rows:
+            yield row["data"]
 
     async def list_files(
         self,
@@ -125,24 +161,52 @@ class BlobStorage(Storage):
     async def receive_upload(
         self, path: str, stream, content_type: str
     ) -> FileMetadata:
-        chunks = []
+        # Buffer incoming stream, computing hash and splitting into chunks
+        buf = bytearray()
         sha256 = hashlib.sha256()
         size = 0
-        async for chunk in stream:
-            chunks.append(chunk)
-            sha256.update(chunk)
-            size += len(chunk)
-        content = b"".join(chunks)
+        chunks = []
+        async for data in stream:
+            sha256.update(data)
+            size += len(data)
+            buf.extend(data)
+            while len(buf) >= CHUNK_SIZE:
+                chunks.append(bytes(buf[:CHUNK_SIZE]))
+                del buf[:CHUNK_SIZE]
+        if buf:
+            chunks.append(bytes(buf))
+
         content_hash = "sha256:" + sha256.hexdigest()
 
-        await self._db().execute_write(
+        db = self._db()
+
+        # Delete any existing chunks for this path (for replace)
+        await db.execute_write(
+            "DELETE FROM datasette_files_blob_chunks WHERE source_slug = ? AND path = ?",
+            [self.source_slug, path],
+        )
+
+        # Insert metadata row
+        await db.execute_write(
             """
             INSERT OR REPLACE INTO datasette_files_blobs
-                (source_slug, path, content, content_type, content_hash, size)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (source_slug, path, content_type, content_hash, size)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            [self.source_slug, path, content, content_type, content_hash, size],
+            [self.source_slug, path, content_type, content_hash, size],
         )
+
+        # Insert chunks
+        for i, chunk in enumerate(chunks):
+            await db.execute_write(
+                """
+                INSERT INTO datasette_files_blob_chunks
+                    (source_slug, path, chunk_index, data)
+                VALUES (?, ?, ?, ?)
+                """,
+                [self.source_slug, path, i, chunk],
+            )
+
         return FileMetadata(
             path=path,
             filename=PurePosixPath(path).name,
@@ -160,7 +224,12 @@ class BlobStorage(Storage):
         ).first()
         if row is None:
             raise FileNotFoundError(f"File not found: {path}")
-        await self._db().execute_write(
+        db = self._db()
+        await db.execute_write(
+            "DELETE FROM datasette_files_blob_chunks WHERE source_slug = ? AND path = ?",
+            [self.source_slug, path],
+        )
+        await db.execute_write(
             "DELETE FROM datasette_files_blobs WHERE source_slug = ? AND path = ?",
             [self.source_slug, path],
         )

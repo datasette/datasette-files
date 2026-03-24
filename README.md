@@ -18,7 +18,7 @@ datasette install datasette-files
 
 datasette-files manages files through **sources** — named connections to storage backends. Each source has a slug, a storage type, and backend-specific configuration.
 
-The default `filesystem` source stores files in a directory on disk. You can install additional plugins to add support for extra sources such as [datasette-files-s3](https://github.com/datasette/datasette-files-s3).
+The default `filesystem` source stores files in a directory on disk. The built-in `blob` source stores files directly in Datasette's internal database with no external dependencies. You can install additional plugins to add support for extra sources such as [datasette-files-s3](https://github.com/datasette/datasette-files-s3).
 
 ### Configuring sources
 
@@ -36,7 +36,17 @@ plugins:
 
 This creates a source called `my-files` backed by a local directory at `/data/uploads`. The directory will be created if it doesn't exist.
 
-You can configure multiple sources:
+For zero-configuration storage, use the `blob` backend which stores files directly in Datasette's internal database:
+
+```yaml
+plugins:
+  datasette-files:
+    sources:
+      my-files:
+        storage: blob
+```
+
+You can configure multiple sources, mixing storage types:
 
 ```yaml
 plugins:
@@ -46,10 +56,8 @@ plugins:
         storage: filesystem
         config:
           root: /data/photos
-      documents:
-        storage: filesystem
-        config:
-          root: /data/documents
+      attachments:
+        storage: blob
 ```
 
 ### Permissions
@@ -768,6 +776,37 @@ The built-in `FilesystemStorage` stores files on the local filesystem. It suppor
 | `can_list` | `True` |
 | `can_generate_signed_urls` | `False` |
 | `requires_proxy_download` | `True` |
+
+### Built-in blob storage reference
+
+The built-in `BlobStorage` stores file content directly in Datasette's internal SQLite database. It requires no external configuration — just set `storage: blob`. File content is split into 512 KB chunks so large files can be streamed without loading the entire content into memory.
+
+**Configuration options:**
+
+None required. The blob storage backend has no configuration options — all data is stored in the internal database automatically.
+
+```yaml
+plugins:
+  datasette-files:
+    sources:
+      my-files:
+        storage: blob
+```
+
+**Capabilities:**
+
+| Capability | Value |
+|-----------|-------|
+| `can_upload` | `True` |
+| `can_delete` | `True` |
+| `can_list` | `True` |
+| `can_generate_signed_urls` | `False` |
+| `requires_proxy_download` | `True` |
+
+**When to use blob vs filesystem:**
+
+- Use `blob` when you want zero-configuration storage, when you want all data in a single SQLite database file, or when deploying to environments without a persistent filesystem (e.g. some container platforms).
+- Use `filesystem` when you need direct filesystem access to uploaded files, when files are very large, or when you want to manage the storage directory independently of Datasette.
 
 ## Development
 
