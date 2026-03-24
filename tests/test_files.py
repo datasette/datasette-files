@@ -510,6 +510,180 @@ async def test_search_source_filter(datasette_browse_allowed, upload_dir):
     assert len(response.json()["files"]) == 0
 
 
+# --- Search pagination ---
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_fields(datasette_browse_allowed, upload_dir):
+    """Search JSON response includes pagination metadata."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="alpha.txt", content=b"a")
+
+    response = await ds.client.get("/-/files/search.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["page"] == 1
+    assert data["total_pages"] == 1
+    assert data["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_multiple_pages(datasette_browse_allowed, upload_dir):
+    """Search JSON paginates results when there are more than PAGE_SIZE files."""
+    ds = datasette_browse_allowed
+    # Upload 25 files (PAGE_SIZE is 20)
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"pagefile-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+
+    # Page 1 should have 20 files
+    response = await ds.client.get("/-/files/search.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 20
+    assert data["page"] == 1
+    assert data["total_pages"] == 2
+    assert data["total"] == 25
+
+    # Page 2 should have the remaining 5 files
+    response = await ds.client.get("/-/files/search.json?page=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 5
+    assert data["page"] == 2
+    assert data["total_pages"] == 2
+    assert data["total"] == 25
+
+    # Page 3 should be empty
+    response = await ds.client.get("/-/files/search.json?page=3")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 0
+    assert data["page"] == 3
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_with_query(datasette_browse_allowed, upload_dir):
+    """FTS search results are paginated."""
+    ds = datasette_browse_allowed
+    # Upload 25 files matching a search term, plus some that don't
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"report-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+    await _upload_file(ds, filename="unrelated.jpg", content=b"img", content_type="image/jpeg")
+
+    # Search for "report" - page 1
+    response = await ds.client.get("/-/files/search.json?q=report")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 20
+    assert data["total"] == 25
+    assert data["total_pages"] == 2
+    assert all("report" in f["filename"] for f in data["files"])
+
+    # Search for "report" - page 2
+    response = await ds.client.get("/-/files/search.json?q=report&page=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 5
+    assert data["total"] == 25
+    assert all("report" in f["filename"] for f in data["files"])
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_with_source_filter(datasette_browse_allowed, upload_dir):
+    """Pagination works together with source filter."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"filtered-{i:03d}.txt",
+            content=f"data-{i}".encode(),
+        )
+
+    response = await ds.client.get("/-/files/search.json?source=test-uploads&page=1")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 20
+    assert data["total"] == 25
+
+    response = await ds.client.get("/-/files/search.json?source=test-uploads&page=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_search_html_pagination_links(datasette_browse_allowed, upload_dir):
+    """Search HTML page shows pagination links when results span multiple pages."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"htmlpage-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+
+    # Page 1 should show Next link but no Previous link
+    response = await ds.client.get("/-/files/search")
+    assert response.status_code == 200
+    html = response.text
+    assert "Page 1 of 2" in html
+    assert "page=2" in html
+    assert "Previous" not in html
+    assert "25 results" in html
+
+    # Page 2 should show Previous link but no Next link
+    response = await ds.client.get("/-/files/search?page=2")
+    assert response.status_code == 200
+    html = response.text
+    assert "Page 2 of 2" in html
+    assert "page=1" in html
+    assert "Previous" in html
+    assert "Next" not in html
+
+
+@pytest.mark.asyncio
+async def test_search_html_pagination_with_query(datasette_browse_allowed, upload_dir):
+    """Search HTML pagination links preserve the query parameter."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"doc-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+
+    response = await ds.client.get("/-/files/search?q=doc")
+    assert response.status_code == 200
+    html = response.text
+    assert "Page 1 of 2" in html
+    # The Next link should include the query
+    assert "q=doc" in html
+    assert "page=2" in html
+
+
+@pytest.mark.asyncio
+async def test_search_html_no_pagination_when_few_results(datasette_browse_allowed, upload_dir):
+    """Search HTML page does not show pagination when results fit on one page."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="solo.txt", content=b"only one")
+
+    response = await ds.client.get("/-/files/search?q=solo")
+    assert response.status_code == 200
+    html = response.text
+    assert "solo.txt" in html
+    assert "Page 1 of 1" not in html
+    assert "Previous" not in html
+    assert "Next" not in html
+
+
 # --- Homepage action ---
 
 
