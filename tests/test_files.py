@@ -145,6 +145,132 @@ async def test_filesystem_storage_delete(upload_dir):
         await storage.read_file("del/gone.txt")
 
 
+# --- Storage constructor with datasette parameter ---
+
+
+@pytest.mark.asyncio
+async def test_storage_class_receives_datasette_if_accepted(tmp_path):
+    """Storage classes whose __init__ accepts a datasette parameter should
+    receive the Datasette instance automatically at instantiation time."""
+    from datasette_files.base import Storage, StorageCapabilities
+
+    received = {}
+
+    class DatasettAwareStorage(Storage):
+        storage_type = "aware"
+        capabilities = StorageCapabilities(can_list=True)
+
+        def __init__(self, datasette):
+            self.datasette = datasette
+            received["datasette"] = datasette
+
+        async def configure(self, config, get_secret):
+            pass
+
+        async def get_file_metadata(self, path):
+            return None
+
+        async def read_file(self, path):
+            raise FileNotFoundError(path)
+
+        async def list_files(self, prefix="", cursor=None, limit=100):
+            return [], None
+
+    root = tmp_path / "aware-uploads"
+    root.mkdir()
+
+    ds = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "aware-src": {
+                            "storage": "aware",
+                            "config": {"root": str(root)},
+                        }
+                    }
+                }
+            }
+        },
+    )
+
+    # Monkey-patch the built-in storage types to include our test class
+    import datasette_files as df_mod
+
+    original_types = dict(df_mod.BUILT_IN_STORAGE_TYPES)
+    original_sources = dict(df_mod._sources)
+    original_meta = dict(df_mod._source_meta)
+    df_mod.BUILT_IN_STORAGE_TYPES["aware"] = DatasettAwareStorage
+    try:
+        await ds.invoke_startup()
+        assert "datasette" in received
+        assert received["datasette"] is ds
+    finally:
+        df_mod.BUILT_IN_STORAGE_TYPES.clear()
+        df_mod.BUILT_IN_STORAGE_TYPES.update(original_types)
+        df_mod._sources.clear()
+        df_mod._sources.update(original_sources)
+        df_mod._source_meta.clear()
+        df_mod._source_meta.update(original_meta)
+
+
+@pytest.mark.asyncio
+async def test_storage_class_without_datasette_still_works(tmp_path):
+    """Storage classes that don't accept datasette should still be
+    instantiated normally (no arguments)."""
+    from datasette_files.base import Storage, StorageCapabilities
+
+    class PlainStorage(Storage):
+        storage_type = "plain"
+        capabilities = StorageCapabilities()
+
+        async def configure(self, config, get_secret):
+            pass
+
+        async def get_file_metadata(self, path):
+            return None
+
+        async def read_file(self, path):
+            raise FileNotFoundError(path)
+
+    root = tmp_path / "plain-uploads"
+    root.mkdir()
+
+    ds = Datasette(
+        memory=True,
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "plain-src": {
+                            "storage": "plain",
+                            "config": {"root": str(root)},
+                        }
+                    }
+                }
+            }
+        },
+    )
+
+    import datasette_files as df_mod
+
+    original_types = dict(df_mod.BUILT_IN_STORAGE_TYPES)
+    original_sources = dict(df_mod._sources)
+    original_meta = dict(df_mod._source_meta)
+    df_mod.BUILT_IN_STORAGE_TYPES["plain"] = PlainStorage
+    try:
+        await ds.invoke_startup()
+        # Should start up without error — plain storage gets no args
+    finally:
+        df_mod.BUILT_IN_STORAGE_TYPES.clear()
+        df_mod.BUILT_IN_STORAGE_TYPES.update(original_types)
+        df_mod._sources.clear()
+        df_mod._sources.update(original_sources)
+        df_mod._source_meta.clear()
+        df_mod._source_meta.update(original_meta)
+
+
 # --- Internal database schema ---
 
 

@@ -354,9 +354,20 @@ def register_files_storage_types(datasette):
 
 When a source in `datasette.yaml` references your storage type, datasette-files will:
 
-1. Instantiate your class (calling `S3Storage()`)
+1. Instantiate your class — if the `__init__` method accepts a `datasette` parameter, the Datasette instance is passed automatically; otherwise the class is called with no arguments
 2. Call `await storage.configure(config, get_secret)` with the source's config dict
 3. Use your storage instance for all file operations on that source
+
+This means storage backends that need access to the Datasette instance (for example, to read plugin configuration or use internal databases) can declare it as a constructor parameter:
+
+```python
+class MyStorage(Storage):
+    def __init__(self, datasette):
+        self.datasette = datasette
+    ...
+```
+
+Storage classes that don't need the Datasette instance can omit the parameter entirely — the default no-argument constructor will be used as before.
 
 ## Plugin hook: `register_thumbnail_generators`
 

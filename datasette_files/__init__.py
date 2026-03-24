@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 import re
 import string
@@ -555,7 +556,12 @@ def startup(datasette):
                 )
 
             storage_cls = storage_types[storage_type_name]
-            storage = storage_cls()
+            # Pass datasette to storage classes that accept it
+            init_params = inspect.signature(storage_cls).parameters
+            kwargs = {}
+            if "datasette" in init_params:
+                kwargs["datasette"] = datasette
+            storage = storage_cls(**kwargs)
 
             source_config = source_def.get("config", {})
             await storage.configure(source_config, get_secret=None)
