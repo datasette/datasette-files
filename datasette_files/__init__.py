@@ -16,6 +16,7 @@ from markupsafe import Markup
 from ulid import ULID
 from . import hookspecs
 from .base import StorageCapabilities
+from .blob import BlobStorage
 from .filesystem import FilesystemStorage
 
 _FILE_ID_RE = re.compile(r"^df-[a-z0-9]{26}$")
@@ -46,7 +47,7 @@ _MAX_FILENAME_BYTES = 255
 pm.add_hookspecs(hookspecs)
 
 # Built-in storage types (always available, no plugin needed)
-BUILT_IN_STORAGE_TYPES = {"filesystem": FilesystemStorage}
+BUILT_IN_STORAGE_TYPES = {"filesystem": FilesystemStorage, "blob": BlobStorage}
 
 # Registry of configured source instances: {slug: storage_instance}
 _sources = {}
@@ -556,11 +557,10 @@ def startup(datasette):
                 )
 
             storage_cls = storage_types[storage_type_name]
-            # Pass datasette to storage classes that accept it
+            # Pass supported arguments to storage constructors
             init_params = inspect.signature(storage_cls).parameters
-            kwargs = {}
-            if "datasette" in init_params:
-                kwargs["datasette"] = datasette
+            available = {"datasette": datasette, "source_slug": slug}
+            kwargs = {k: v for k, v in available.items() if k in init_params}
             storage = storage_cls(**kwargs)
 
             source_config = source_def.get("config", {})

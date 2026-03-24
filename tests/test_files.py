@@ -499,9 +499,7 @@ async def test_sources_json(datasette_with_files):
     assert response.status_code == 200
     data = response.json()
     assert "sources" in data
-    assert len(data["sources"]) == 1
-    source = data["sources"][0]
-    assert source["slug"] == "test-uploads"
+    source = next(s for s in data["sources"] if s["slug"] == "test-uploads")
     assert source["storage_type"] == "filesystem"
     assert "capabilities" in source
 
