@@ -340,6 +340,24 @@ class FileSourceResource(Resource):
         return "SELECT slug AS parent, NULL AS child FROM datasette_files_sources"
 
 
+class FileResource(Resource):
+    """An individual file within a source."""
+
+    name = "file"
+    parent_class = FileSourceResource
+
+    def __init__(self, source_slug: str, file_id: str):
+        super().__init__(parent=source_slug, child=file_id)
+
+    @classmethod
+    async def resources_sql(cls, datasette, actor=None) -> str:
+        return """
+            SELECT s.slug AS parent, f.id AS child
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+        """
+
+
 @hookimpl
 def register_actions():
     return [
@@ -358,14 +376,14 @@ def register_actions():
         Action(
             name="files-edit",
             abbr="fe",
-            description="Edit file metadata in a source",
-            resource_class=FileSourceResource,
+            description="Edit file metadata",
+            resource_class=FileResource,
         ),
         Action(
             name="files-delete",
             abbr="fd",
-            description="Delete files from a source",
-            resource_class=FileSourceResource,
+            description="Delete files",
+            resource_class=FileResource,
         ),
     ]
 
@@ -451,6 +469,40 @@ def files_permission_resources_sql(datasette, actor, action):
     return PermissionSQL(
         sql="\nUNION ALL\n".join(rules),
         params=params,
+    )
+
+
+@hookimpl(specname="permission_resources_sql")
+def files_owner_permissions_sql(datasette, actor, action):
+    """Grant file owners edit/delete permission on their own files.
+
+    Enabled via plugin config:
+        plugins:
+          datasette-files:
+            owners_can_edit: true
+            owners_can_delete: true
+    """
+    if action not in ("files-edit", "files-delete"):
+        return None
+    if not actor or not actor.get("id"):
+        return None
+
+    plugin_config = datasette.plugin_config("datasette-files") or {}
+    if action == "files-edit" and not plugin_config.get("owners_can_edit"):
+        return None
+    if action == "files-delete" and not plugin_config.get("owners_can_delete"):
+        return None
+
+    return PermissionSQL(
+        sql="""
+            SELECT s.slug AS parent, f.id AS child,
+                   1 AS allow,
+                   'file owner' AS reason
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE f.uploaded_by = :dfow_actor_id
+        """,
+        params={"dfow_actor_id": actor["id"]},
     )
 
 
@@ -950,7 +1002,7 @@ async def file_delete(request, datasette):
     # Check delete permission
     allowed = await datasette.allowed(
         action="files-delete",
-        resource=FileSourceResource(source_slug),
+        resource=FileResource(source_slug, file_id),
         actor=request.actor,
     )
     if not allowed:
@@ -989,7 +1041,7 @@ async def file_update(request, datasette):
     # Check edit permission
     allowed = await datasette.allowed(
         action="files-edit",
-        resource=FileSourceResource(source_slug),
+        resource=FileResource(source_slug, file_id),
         actor=request.actor,
     )
     if not allowed:
