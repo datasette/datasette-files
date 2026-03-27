@@ -56,14 +56,16 @@ plugins:
 
 All access is **denied by default**. You must explicitly grant permissions in the `permissions:` block of your `datasette.yaml`.
 
-There are four permission actions, each scoped to a source:
+There are four permission actions:
 
-| Action | Description |
-|--------|-------------|
-| `files-browse` | Browse, search, view, and download files |
-| `files-upload` | Upload files to a source |
-| `files-edit` | Edit file metadata (e.g. search text) |
-| `files-delete` | Delete files from a source |
+| Action | Description | Scoped to |
+|--------|-------------|-----------|
+| `files-browse` | Browse, search, view, and download files | Source |
+| `files-upload` | Upload files to a source | Source |
+| `files-edit` | Edit file metadata (e.g. search text) | File |
+| `files-delete` | Delete files from a source | File |
+
+`files-browse` and `files-upload` are scoped to a source — granting them allows the action on all files in that source. `files-edit` and `files-delete` are scoped to individual files, but a source-level grant cascades to all files within it.
 
 CSV/TSV import also requires Datasette's built-in `create-table` and `insert-row` permissions on the target database. See [Built-in CSV import action](#built-in-csv-import-action) for details.
 
@@ -100,6 +102,26 @@ permissions:
       allow:
         id: alice
 ```
+
+#### Owner permissions
+
+By default, anyone with `files-edit` or `files-delete` permission on a source can edit or delete any file in that source. You can restrict edit and delete so that users can only act on files they uploaded themselves:
+
+```yaml
+plugins:
+  datasette-files:
+    owners_can_edit: true
+    owners_can_delete: true
+    sources:
+      my-files:
+        storage: filesystem
+        config:
+          root: /data/uploads
+```
+
+With these settings, the uploader of each file gains edit or delete permission on their own files — without needing a source-level `files-edit` or `files-delete` grant. Actors who *do* have a source-level grant (e.g. admins) can still act on any file in that source.
+
+Files uploaded without an authenticated actor have no owner, so they can only be managed by actors with source-level grants.
 
 ### Uploading files
 
@@ -181,7 +203,7 @@ curl -X POST "http://localhost:8001/-/files/df-01j5.../-/delete" \
   -d '{}'
 ```
 
-Requires `files-delete` permission on the file's source.
+Requires `files-delete` permission on the file (or a source-level `files-delete` grant).
 
 Deletion also depends on the storage backend supporting `can_delete`.
 
@@ -193,7 +215,7 @@ curl -X POST "http://localhost:8001/-/files/df-01j5.../-/update" \
   -d '{"update": {"search_text": "Annual report 2025"}}'
 ```
 
-Requires `files-edit` permission on the file's source. Only `search_text` can be updated through this endpoint for now, and the response returns the updated file record.
+Requires `files-edit` permission on the file (or a source-level `files-edit` grant). Only `search_text` can be updated through this endpoint for now, and the response returns the updated file record.
 
 ### Viewing files
 
