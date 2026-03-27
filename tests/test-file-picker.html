@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>datasette-file-picker tests</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2em auto; }
+    .pass { color: green; }
+    .fail { color: red; }
+    #results { white-space: pre-wrap; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>datasette-file-picker tests</h1>
+  <div id="results"></div>
+
+  <script type="module">
+    // --- Mock fetch ---
+    const MOCK_FILES = [
+      { id: "df-abc", filename: "photo.jpg", size: 204800, source_slug: "uploads" },
+      { id: "df-def", filename: "report.pdf", size: 1048576, source_slug: "docs" },
+    ];
+    const MOCK_SOURCES = {
+      sources: [
+        { slug: "uploads", capabilities: { can_upload: true } },
+        { slug: "readonly", capabilities: { can_upload: false } },
+      ],
+    };
+
+    const _realFetch = window.fetch;
+    window.fetch = async (url, opts) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.includes("/-/files/search.json")) {
+        const params = new URL(urlStr, "http://localhost").searchParams;
+        const q = params.get("q") || "";
+        const files = q
+          ? MOCK_FILES.filter((f) => f.filename.toLowerCase().includes(q.toLowerCase()))
+          : MOCK_FILES;
+        return new Response(JSON.stringify({ files }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (urlStr.includes("/-/files/sources.json")) {
+        return new Response(JSON.stringify(MOCK_SOURCES), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return _realFetch(url, opts);
+    };
+
+    // --- Test harness ---
+    const results = document.getElementById("results");
+    let passed = 0;
+    let failed = 0;
+
+    function log(msg, ok) {
+      const span = document.createElement("span");
+      span.className = ok ? "pass" : "fail";
+      span.textContent = (ok ? "PASS" : "FAIL") + ": " + msg + "\n";
+      results.appendChild(span);
+      if (ok) passed++;
+      else failed++;
+    }
+
+    function assert(condition, msg) {
+      log(msg, !!condition);
+      if (!condition) throw new Error("Assertion failed: " + msg);
+    }
+
+    // Wait for a Shadow DOM query to appear
+    function waitFor(picker, selector, timeout = 2000) {
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        function check() {
+          const el = picker.shadowRoot?.querySelector(selector);
+          if (el) return resolve(el);
+          if (Date.now() - start > timeout) return reject(new Error(`Timeout waiting for ${selector}`));
+          requestAnimationFrame(check);
+        }
+        check();
+      });
+    }
+
+    // Wait for search results to populate
+    function waitForResults(picker, timeout = 2000) {
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        function check() {
+          const items = picker.shadowRoot?.querySelectorAll(".results li[role='option']");
+          if (items && items.length > 0) return resolve(items);
+          if (Date.now() - start > timeout) return reject(new Error("Timeout waiting for results"));
+          requestAnimationFrame(check);
+        }
+        check();
+      });
+    }
+
+    // Small delay helper
+    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // --- Import the module ---
+    const { openFilePicker } = await import("../datasette_files/static/datasette-file-picker.js");
+
+    // ===== Test 1: openFilePicker returns a Promise =====
+    async function testReturnsPromise() {
+      const promise = openFilePicker({ column: "photo" });
+      assert(promise instanceof Promise, "openFilePicker() returns a Promise");
+
+      // Find the picker element and click close to resolve it
+      const picker = document.querySelector("datasette-file-picker");
+      assert(picker !== null, "picker element is in the DOM");
+      assert(picker.shadowRoot !== null, "picker has a Shadow DOM");
+
+      const closeBtn = await waitFor(picker, ".close-btn");
+      closeBtn.click();
+
+      const result = await promise;
+      assert(result === null, "closing returns null");
+      assert(document.querySelector("datasette-file-picker") === null, "picker removed from DOM after close");
+    }
+
+    // ===== Test 2: selecting a file resolves with file ID =====
+    async function testSelectFile() {
+      const promise = openFilePicker({ column: "attachment" });
+      const picker = document.querySelector("datasette-file-picker");
+
+      const items = await waitForResults(picker);
+      assert(items.length === 2, "renders 2 mock files");
+
+      // Verify file info is rendered
+      const firstFilename = items[0].querySelector(".filename");
+      assert(firstFilename.textContent === "photo.jpg", "first result shows filename");
+
+      // Click the first result
+      items[0].click();
+
+      const result = await promise;
+      assert(result === "df-abc", "selecting file resolves with file ID 'df-abc'");
+      assert(document.querySelector("datasette-file-picker") === null, "picker removed after selection");
+    }
+
+    // ===== Test 3: column attribute is displayed =====
+    async function testColumnDisplayed() {
+      const promise = openFilePicker({ column: "my_column" });
+      const picker = document.querySelector("datasette-file-picker");
+
+      const header = await waitFor(picker, ".header h3");
+      assert(header.textContent.includes("my_column"), "header shows column name");
+
+      // Clean up
+      picker.shadowRoot.querySelector(".close-btn").click();
+      await promise;
+    }
+
+    // ===== Test 4: current-file-id shows remove button and highlights current =====
+    async function testCurrentFileId() {
+      const promise = openFilePicker({ column: "photo", currentFileId: "df-abc" });
+      const picker = document.querySelector("datasette-file-picker");
+
+      assert(picker.getAttribute("current-file-id") === "df-abc", "current-file-id attribute is set");
+
+      const removeBtn = await waitFor(picker, ".remove-btn");
+      assert(removeBtn !== null, "remove button is present when currentFileId is set");
+      assert(removeBtn.textContent === "Remove file", "remove button text is correct");
+
+      // Wait for results and check highlight
+      const items = await waitForResults(picker);
+      const selected = picker.shadowRoot.querySelector(".results li.selected");
+      assert(selected !== null, "current file is highlighted");
+      assert(selected.querySelector(".filename").textContent === "photo.jpg", "highlighted file matches currentFileId");
+
+      // Click remove
+      removeBtn.click();
+      const result = await promise;
+      assert(result === "", 'remove button resolves with empty string ""');
+    }
+
+    // ===== Test 5: no remove button when currentFileId is not set =====
+    async function testNoRemoveWithoutCurrentFile() {
+      const promise = openFilePicker({ column: "doc" });
+      const picker = document.querySelector("datasette-file-picker");
+
+      await waitForResults(picker);
+      const removeBtn = picker.shadowRoot.querySelector(".remove-btn");
+      assert(removeBtn === null, "no remove button when no currentFileId");
+
+      picker.shadowRoot.querySelector(".close-btn").click();
+      await promise;
+    }
+
+    // ===== Test 6: dialog cancel (Escape) returns null =====
+    async function testDialogCancel() {
+      const promise = openFilePicker({ column: "file" });
+      const picker = document.querySelector("datasette-file-picker");
+      const dialog = await waitFor(picker, "dialog");
+
+      assert(dialog.open, "dialog is open");
+
+      // Dispatch cancel event (simulates Escape key)
+      dialog.dispatchEvent(new Event("cancel"));
+
+      const result = await promise;
+      assert(result === null, "cancel event resolves with null");
+    }
+
+    // ===== Test 7: file-selected event is dispatched =====
+    async function testFileSelectedEvent() {
+      let eventDetail = null;
+      const handler = (e) => { eventDetail = e.detail; };
+      document.body.addEventListener("file-selected", handler);
+
+      const promise = openFilePicker({ column: "img" });
+      const picker = document.querySelector("datasette-file-picker");
+      const items = await waitForResults(picker);
+      items[1].click();
+
+      await promise;
+      assert(eventDetail !== null, "file-selected event was dispatched");
+      assert(eventDetail.fileId === "df-def", "event detail contains correct fileId");
+
+      document.body.removeEventListener("file-selected", handler);
+    }
+
+    // ===== Test 8: upload section loads sources =====
+    async function testUploadSourcesLoaded() {
+      const promise = openFilePicker({ column: "file" });
+      const picker = document.querySelector("datasette-file-picker");
+
+      // Wait for sources to load
+      await delay(100);
+      const select = picker.shadowRoot.querySelector(".source-select");
+      const options = select.querySelectorAll("option");
+      assert(options.length === 1, "only uploadable sources shown (1 of 2)");
+      assert(options[0].value === "uploads", "uploadable source is 'uploads'");
+
+      // Single source hides the select
+      assert(select.style.display === "none", "source select hidden when only one source");
+
+      picker.shadowRoot.querySelector(".close-btn").click();
+      await promise;
+    }
+
+    // ===== Test 9: web component is registered =====
+    async function testCustomElementRegistered() {
+      const Ctor = customElements.get("datasette-file-picker");
+      assert(Ctor !== undefined, "datasette-file-picker custom element is registered");
+    }
+
+    // ===== Test 10: multiple sequential opens work =====
+    async function testMultipleOpens() {
+      // First open
+      const p1 = openFilePicker({ column: "a" });
+      let picker = document.querySelector("datasette-file-picker");
+      picker.shadowRoot.querySelector(".close-btn").click();
+      const r1 = await p1;
+      assert(r1 === null, "first open resolves");
+
+      // Second open
+      const p2 = openFilePicker({ column: "b" });
+      picker = document.querySelector("datasette-file-picker");
+      assert(picker !== null, "second picker is created");
+      const items = await waitForResults(picker);
+      items[0].click();
+      const r2 = await p2;
+      assert(r2 === "df-abc", "second open resolves with selected file");
+    }
+
+    // ===== Run all tests =====
+    const tests = [
+      testReturnsPromise,
+      testSelectFile,
+      testColumnDisplayed,
+      testCurrentFileId,
+      testNoRemoveWithoutCurrentFile,
+      testDialogCancel,
+      testFileSelectedEvent,
+      testUploadSourcesLoaded,
+      testCustomElementRegistered,
+      testMultipleOpens,
+    ];
+
+    for (const test of tests) {
+      try {
+        await test();
+      } catch (err) {
+        log(`${test.name} threw: ${err.message}`, false);
+      }
+    }
+
+    // Summary
+    const summary = document.createElement("div");
+    summary.style.marginTop = "1em";
+    summary.style.fontWeight = "bold";
+    summary.textContent = `${passed} passed, ${failed} failed`;
+    summary.style.color = failed > 0 ? "red" : "green";
+    results.appendChild(summary);
+  </script>
+</body>
+</html>
