@@ -1,10 +1,9 @@
 """Tests for POST /-/files/{file_id}/-/update endpoint."""
 
-from datasette.app import Datasette
 import pytest
 import json
 
-from conftest import _upload_file, _make_datasette
+from conftest import _upload_file
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 from datasette.app import Datasette
+import asyncio
 import json
 import pytest
-import os
 
 
 @pytest.fixture
@@ -152,3 +152,23 @@ async def _upload_file(
         "url": file_data["url"],
         "file": file_data,
     }
+
+
+async def _wait_for_import(ds, timeout=10, poll_interval=0.5):
+    """Poll the internal DB until the most recent import job finishes."""
+    internal_db = ds.get_internal_database()
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        rows = (
+            await internal_db.execute(
+                "SELECT * FROM _datasette_files_imports ORDER BY rowid DESC LIMIT 1"
+            )
+        ).rows
+        if rows and dict(rows[0])["status"] == "finished":
+            return dict(rows[0])
+        if asyncio.get_event_loop().time() >= deadline:
+            status = dict(rows[0])["status"] if rows else "no rows"
+            raise TimeoutError(
+                f"Import did not finish within {timeout}s (status: {status})"
+            )
+        await asyncio.sleep(poll_interval)

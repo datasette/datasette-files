@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 import pytest
 
-from conftest import _upload_file, _make_datasette
+from conftest import _upload_file
 
 
 @pytest.mark.parametrize(

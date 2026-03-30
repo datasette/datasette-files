@@ -1,5 +1,4 @@
 import io
-import json
 import pytest
 from PIL import Image
 from conftest import _make_datasette, _upload_file

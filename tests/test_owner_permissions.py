@@ -11,7 +11,7 @@ from datasette.app import Datasette
 import json
 import pytest
 
-from conftest import _make_datasette, _upload_file
+from conftest import _upload_file
 
 
 def _make_owner_datasette(upload_dir, owners_can_edit=False, owners_can_delete=False):

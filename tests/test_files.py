@@ -1,11 +1,10 @@
 from datasette.app import Datasette
 import pytest
 import json
-import tempfile
 import os
 import sqlite3
 
-from conftest import _upload_file, _make_datasette
+from conftest import _upload_file, _make_datasette, _wait_for_import
 
 
 async def _bytes_stream(data: bytes):
@@ -1039,7 +1038,7 @@ async def test_render_cell_includes_data_column(datasette_browse_allowed, upload
         request=None,
     )
     assert result is not None
-    assert f'data-column="document"' in result
+    assert 'data-column="document"' in result
     assert f'file-id="{file_id}"' in result
 
 
@@ -1724,7 +1723,6 @@ async def test_import_permission_checks(
 @pytest.mark.asyncio
 async def test_import_post_creates_job_and_imports(tmp_path):
     """POST /-/files/import/{file_id} creates import job, imports CSV, and redirects to progress page."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -1733,6 +1731,7 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -1773,14 +1772,9 @@ async def test_import_post_creates_job_and_imports(tmp_path):
     location = response.headers["location"]
     assert "/-/files/import/" in location
 
-    # Give the async task time to complete
-    await asyncio.sleep(0.5)
+    job = await _wait_for_import(ds)
 
     # Verify import job was created in internal DB
-    internal_db = ds.get_internal_database()
-    jobs = (await internal_db.execute("SELECT * FROM _datasette_files_imports")).rows
-    assert len(jobs) == 1
-    job = dict(jobs[0])
     assert job["file_id"] == file_id
     assert job["import_type"] == "csv"
     assert job["database_name"] == "data"
@@ -1806,7 +1800,6 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 @pytest.mark.asyncio
 async def test_import_csv_with_empty_rows(tmp_path):
     """CSV import handles files with empty rows (blank lines) without division by zero."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -1815,6 +1808,7 @@ async def test_import_csv_with_empty_rows(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -1851,11 +1845,7 @@ async def test_import_csv_with_empty_rows(tmp_path):
     )
     assert response.status_code in (301, 302, 303)
 
-    await asyncio.sleep(0.5)
-
-    internal_db = ds.get_internal_database()
-    jobs = (await internal_db.execute("SELECT * FROM _datasette_files_imports")).rows
-    job = dict(jobs[0])
+    job = await _wait_for_import(ds)
     assert job["status"] == "finished"
     assert job["row_count"] == 3
 
@@ -1869,7 +1859,6 @@ async def test_import_csv_with_empty_rows(tmp_path):
 @pytest.mark.asyncio
 async def test_import_progress_json(tmp_path):
     """GET /-/files/import/{file_id}/{import_id}.json returns progress data."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -1878,6 +1867,7 @@ async def test_import_progress_json(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -1914,10 +1904,7 @@ async def test_import_progress_json(tmp_path):
         follow_redirects=False,
     )
     location = response.headers["location"]
-    # Extract import_id from redirect URL
-    import_id = location.split("/")[-1]
-
-    await asyncio.sleep(0.5)
+    await _wait_for_import(ds)
 
     # Fetch progress JSON
     response = await ds.client.get(f"{location}.json")
@@ -1933,7 +1920,6 @@ async def test_import_progress_json(tmp_path):
 @pytest.mark.asyncio
 async def test_import_progress_page(tmp_path):
     """GET /-/files/import/{file_id}/{import_id} returns an HTML progress page with progress bar."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -1942,6 +1928,7 @@ async def test_import_progress_page(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -1978,7 +1965,7 @@ async def test_import_progress_page(tmp_path):
     )
     location = response.headers["location"]
 
-    await asyncio.sleep(0.5)
+    await _wait_for_import(ds)
 
     # Fetch progress HTML page
     response = await ds.client.get(location)

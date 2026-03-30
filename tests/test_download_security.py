@@ -1,7 +1,7 @@
 """Tests for secure file download headers (Content-Disposition, X-Content-Type-Options)."""
 
 import pytest
-from conftest import _make_datasette, _upload_file
+from conftest import _upload_file
 
 
 @pytest.mark.asyncio

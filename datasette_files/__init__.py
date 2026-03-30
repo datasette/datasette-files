@@ -1,10 +1,14 @@
+import asyncio
+import csv
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import re
+import sqlite_utils
 import string
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html import escape
 from typing import Optional
 from datasette import hookimpl, Response, NotFound, Forbidden
@@ -15,7 +19,7 @@ from datasette.utils import await_me_maybe
 from markupsafe import Markup
 from ulid import ULID
 from . import hookspecs
-from .base import StorageCapabilities
+from .base import FileMetadata, StorageCapabilities as StorageCapabilities
 from .filesystem import FilesystemStorage
 
 _FILE_ID_RE = re.compile(r"^df-[a-z0-9]{26}$")
@@ -33,7 +37,7 @@ class UploadToken:
     used: bool = False
     content_received: bool = False
     actor: Optional[dict] = None
-    file_meta: Optional["FileMetadata"] = None
+    file_meta: Optional[FileMetadata] = None
     actual_size: Optional[int] = None
 
 
@@ -1788,12 +1792,6 @@ async def extra_body_script(
             }
         )
     )
-
-
-import asyncio
-import csv
-import io
-import sqlite_utils
 
 
 def _parse_csv_preview(content_bytes, max_rows=10):
