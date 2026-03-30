@@ -299,6 +299,83 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | `GET` | `/-/files/import/{file_id}/{import_id}` | Import progress page (HTML) |
 | `GET` | `/-/files/import/{file_id}/{import_id}.json` | Import progress (JSON) |
 
+## Python API
+
+Other Datasette plugins can use the `get_file()` function to access files managed by datasette-files.
+
+### `get_file(datasette, file_id)`
+
+Look up a file by its ID and return a `File` object, or `None` if the file was not found.
+
+```python
+from datasette_files import get_file
+
+file = await get_file(datasette, "df-01j5a3b4c5d6e7f8g9h0jkmnpq")
+if file is None:
+    # File not found
+    ...
+```
+
+The `File` object has the following attributes:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `id` | `str` | The file ID |
+| `filename` | `str` | Original filename |
+| `content_type` | `str` | MIME type |
+| `size` | `int` | File size in bytes |
+| `source_slug` | `str` | The source this file belongs to |
+| `uploaded_by` | `str` or `None` | Actor ID of the uploader |
+| `created_at` | `datetime` | UTC timezone-aware datetime of upload |
+| `metadata` | `dict` | Arbitrary metadata dict |
+
+### `file.read(max_bytes=None)`
+
+Read file content as bytes. Pass `max_bytes` to limit how much is read — useful to avoid loading very large files into memory.
+
+```python
+# Read the entire file
+content = await file.read()
+
+# Read at most 1MB
+content = await file.read(max_bytes=1_000_000)
+```
+
+### `file.open()`
+
+Open the file for streaming reads. Returns an async context manager that yields an async iterator of bytes chunks. Use this for large files where you want to avoid loading the entire content into memory.
+
+```python
+async with file.open() as stream:
+    async for chunk in stream:
+        process(chunk)
+```
+
+### Example: using `get_file()` from another plugin
+
+```python
+from datasette_files import get_file
+
+async def my_view(datasette, request):
+    file = await get_file(datasette, request.args["file_id"])
+    if file is None:
+        raise NotFound("File not found")
+
+    if file.content_type.startswith("image/"):
+        image_bytes = await file.read(max_bytes=20_000_000)
+        # Process image...
+    elif file.size and file.size > 10_000_000:
+        # Stream large files
+        async with file.open() as stream:
+            async for chunk in stream:
+                ...
+    else:
+        content = await file.read()
+        text = content.decode("utf-8")
+```
+
+Note: `get_file()` does not perform any permission checks — the calling plugin is responsible for its own authorization.
+
 ## Plugin hook: `file_actions`
 
 The `file_actions` hook lets plugins add custom action links to the file info page. These appear in a "File actions" dropdown menu below the filename heading.

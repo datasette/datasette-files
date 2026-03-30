@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -1098,6 +1099,115 @@ async def _get_file_record(datasette, file_id):
         )
     ).first()
     return row
+
+
+def _parse_created_at(value):
+    """Parse stored timestamps into UTC-aware datetimes.
+
+    Accepts SQLite's default ``YYYY-MM-DD HH:MM:SS`` format plus common
+    ISO 8601 variants such as ``T`` separators, fractional seconds, and
+    explicit offsets.
+    """
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        normalized = value.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class File:
+    """Represents a file managed by datasette-files.
+
+    Returned by :func:`get_file`. Provides metadata attributes and methods
+    for reading file content.
+    """
+
+    def __init__(self, row, storage):
+        self.id = row["id"]
+        self.filename = row["filename"]
+        self.content_type = row["content_type"]
+        self.size = row["size"]
+        self.source_slug = row["source_slug"]
+        self.uploaded_by = row["uploaded_by"]
+        self.created_at = _parse_created_at(row["created_at"])
+        self.metadata = json.loads(row["metadata"] or "{}")
+        self._storage = storage
+        self._path = row["path"]
+
+    async def read(self, max_bytes=None):
+        """Read file content as bytes.
+
+        Args:
+            max_bytes: If set, read at most this many bytes from the start
+                of the file. Useful to avoid loading very large files into
+                memory.
+
+        Returns:
+            The file content as bytes.
+        """
+        if max_bytes is not None:
+            return await self._storage.read_bytes(self._path, max_bytes)
+        return await self._storage.read_file(self._path)
+
+    def open(self):
+        """Open the file for streaming reads.
+
+        Returns an async context manager that yields an async iterator
+        of bytes chunks::
+
+            async with file.open() as stream:
+                async for chunk in stream:
+                    process(chunk)
+        """
+        return _FileStream(self._storage, self._path)
+
+
+class _FileStream:
+    def __init__(self, storage, path):
+        self._storage = storage
+        self._path = path
+        self._iterator = None
+
+    async def __aenter__(self):
+        self._iterator = self._storage.stream_file(self._path)
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._iterator and hasattr(self._iterator, "aclose"):
+            await self._iterator.aclose()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._iterator is None:
+            raise StopAsyncIteration
+        return await self._iterator.__anext__()
+
+
+async def get_file(datasette, file_id):
+    """Look up a file by its ID and return a :class:`File` object.
+
+    Args:
+        datasette: The Datasette instance.
+        file_id: The file ID (e.g. ``"df-01j5a3b4c5d6e7f8g9h0jkmnpq"``).
+
+    Returns:
+        A :class:`File` object, or ``None`` if the file was not found.
+    """
+    row = await _get_file_record(datasette, file_id)
+    if row is None:
+        return None
+    source_slug = row["source_slug"]
+    if source_slug not in _sources:
+        return None
+    return File(row, _sources[source_slug])
 
 
 async def file_info(request, datasette):
