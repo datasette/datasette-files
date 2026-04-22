@@ -551,11 +551,10 @@ async def test_files_index_page(datasette_browse_allowed, upload_dir):
 
 @pytest.mark.asyncio
 async def test_files_index_no_permission(datasette_with_files):
-    """/-/files shows no sources when actor lacks files-browse permission."""
+    """/-/files returns 403 when actor lacks files-browse permission."""
     ds = datasette_with_files
     response = await ds.client.get("/-/files")
-    assert response.status_code == 200
-    assert "No sources available" in response.text
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio

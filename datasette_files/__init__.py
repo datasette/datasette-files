@@ -1679,21 +1679,22 @@ async def files_index(request, datasette):
     allowed_rows = (await db.execute(resources_sql.sql, resources_sql.params)).rows
     allowed_slugs = [row["parent"] for row in allowed_rows]
 
-    sources = []
-    if allowed_slugs:
-        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
-        sql = """
-            SELECT s.slug, COUNT(f.id) as file_count
-            FROM datasette_files_sources s
-            LEFT JOIN datasette_files f ON f.source_id = s.id
-            WHERE s.slug IN ({placeholders})
-            GROUP BY s.slug
-            ORDER BY s.slug
-        """.format(placeholders=placeholders)
-        params = {}
-        for i, slug in enumerate(allowed_slugs):
-            params[f"_slug_{i}"] = slug
-        sources = [dict(row) for row in (await db.execute(sql, params)).rows]
+    if not allowed_slugs:
+        raise Forbidden("files-browse")
+
+    placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+    sql = """
+        SELECT s.slug, COUNT(f.id) as file_count
+        FROM datasette_files_sources s
+        LEFT JOIN datasette_files f ON f.source_id = s.id
+        WHERE s.slug IN ({placeholders})
+        GROUP BY s.slug
+        ORDER BY s.slug
+    """.format(placeholders=placeholders)
+    params = {}
+    for i, slug in enumerate(allowed_slugs):
+        params[f"_slug_{i}"] = slug
+    sources = [dict(row) for row in (await db.execute(sql, params)).rows]
 
     return Response.html(
         await datasette.render_template(
