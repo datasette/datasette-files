@@ -1547,6 +1547,14 @@ async def search_files(request, datasette):
 
     db = datasette.get_internal_database()
 
+    try:
+        page = int(request.args.get("page", "1"))
+    except ValueError:
+        page = 1
+    if page < 1:
+        page = 1
+    offset = (page - 1) * PAGE_SIZE
+
     # Get allowed source slugs via the permissions SQL CTE.
     # We execute this as a separate query because the CTE uses WITH clauses
     # that cannot be nested inside another query alongside FTS MATCH.
@@ -1557,6 +1565,7 @@ async def search_files(request, datasette):
     allowed_rows = (await db.execute(resources_sql.sql, resources_sql.params)).rows
     allowed_slugs = [row["parent"] for row in allowed_rows]
 
+    total = 0
     if not allowed_slugs:
         files = []
     elif q:
@@ -1565,6 +1574,19 @@ async def search_files(request, datasette):
         fts_q = " OR ".join(terms) if len(terms) > 1 else terms[0] if terms else q
         # FTS search filtered to allowed sources
         placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        source_where = "AND s.slug = :source_filter" if source_filter else ""
+        count_sql = """
+            SELECT COUNT(*) as count
+            FROM datasette_files_fts fts
+            JOIN datasette_files f ON fts.id = f.id
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE datasette_files_fts MATCH :q
+            AND s.slug IN ({placeholders})
+            {source_where}
+        """.format(
+            placeholders=placeholders,
+            source_where=source_where,
+        )
         search_sql = """
             SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
                    f.created_at, f.uploaded_by, s.slug as source_slug
@@ -1575,21 +1597,26 @@ async def search_files(request, datasette):
             AND s.slug IN ({placeholders})
             {source_where}
             ORDER BY fts.rank
-            LIMIT 50
+            LIMIT :_limit OFFSET :_offset
         """.format(
             placeholders=placeholders,
-            source_where="AND s.slug = :source_filter" if source_filter else "",
+            source_where=source_where,
         )
         params = {"q": fts_q}
         for i, slug in enumerate(allowed_slugs):
             params[f"_slug_{i}"] = slug
         if source_filter:
             params["source_filter"] = source_filter
+        total = (await db.execute(count_sql, params)).first()["count"]
+        params["_limit"] = PAGE_SIZE
+        params["_offset"] = offset
         files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
     else:
-        files, _ = await _list_files(
-            db, allowed_slugs, source_filter=source_filter or None, limit=50
+        files, total = await _list_files(
+            db, allowed_slugs, source_filter=source_filter or None, offset=offset, limit=PAGE_SIZE
         )
+
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
 
     # The allowed_slugs already represent the browsable sources
     browsable_sources = allowed_slugs
@@ -1602,6 +1629,9 @@ async def search_files(request, datasette):
                 "source": source_filter,
                 "files": files,
                 "sources": browsable_sources,
+                "page": page,
+                "total_pages": total_pages,
+                "total": total,
             }
         )
 
@@ -1614,6 +1644,9 @@ async def search_files(request, datasette):
                 "files": files,
                 "sources": browsable_sources,
                 "show_source": True,
+                "page": page,
+                "total_pages": total_pages,
+                "total": total,
             },
             request=request,
         )

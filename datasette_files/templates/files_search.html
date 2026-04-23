@@ -25,6 +25,21 @@
 {% elif not q and not files %}
 <p>No files available.</p>
 {% else %}
+{% if total %}
+<p>{{ total }} result{{ "s" if total != 1 else "" }}</p>
+{% endif %}
 {% include "_files_table.html" with context %}
+
+{% if total_pages > 1 %}
+<p style="margin-top: 1em;">
+    {% if page > 1 %}
+    <a href="{{ urls.path('/-/files/search') }}?q={{ q|urlencode }}{% if source_filter %}&source={{ source_filter|urlencode }}{% endif %}&page={{ page - 1 }}">Previous</a>
+    {% endif %}
+    Page {{ page }} of {{ total_pages }}
+    {% if page < total_pages %}
+    <a href="{{ urls.path('/-/files/search') }}?q={{ q|urlencode }}{% if source_filter %}&source={{ source_filter|urlencode }}{% endif %}&page={{ page + 1 }}">Next</a>
+    {% endif %}
+</p>
+{% endif %}
 {% endif %}
 {% endblock %}
