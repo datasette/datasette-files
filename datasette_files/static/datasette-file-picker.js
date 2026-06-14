@@ -28,11 +28,14 @@ const PICKER_STYLES = `
   :host {
     display: contents;
   }
+  :host([mode="inline"]) {
+    display: block;
+  }
   dialog {
     --ink: #0f0f0f;
-    --paper: #f5f3ef;
+    --paper: #eef6ff;
     --muted: #6b6b6b;
-    --rule: #e2dfd8;
+    --rule: #d8e6f5;
     --accent: #1a56db;
     --card: #ffffff;
     background: var(--card);
@@ -59,6 +62,26 @@ const PICKER_STYLES = `
     background: var(--modal-backdrop-bg, rgba(0, 0, 0, 0.5));
     backdrop-filter: var(--modal-backdrop-blur, blur(4px));
     -webkit-backdrop-filter: var(--modal-backdrop-blur, blur(4px));
+  }
+  .inline-picker {
+    --ink: #0f0f0f;
+    --paper: #eef6ff;
+    --muted: #6b6b6b;
+    --rule: #d8e6f5;
+    --accent: #1a56db;
+    --card: #ffffff;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    box-sizing: border-box;
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    font-family: system-ui, -apple-system, sans-serif;
+    max-height: min(28rem, calc(100vh - 220px));
+    min-height: 0;
+    overflow: hidden;
+    width: 100%;
   }
   .header {
     align-items: center;
@@ -270,6 +293,24 @@ const PICKER_STYLES = `
     font-size: 0.85em;
     margin-top: 6px;
   }
+  .inline-picker .header {
+    background: var(--paper);
+    padding: 10px 12px;
+  }
+  .inline-picker .header h3 {
+    font-size: 0.88rem;
+  }
+  .inline-picker .body {
+    padding: 10px 12px 12px;
+  }
+  .inline-picker .results {
+    max-height: 14rem;
+    overflow-y: auto;
+  }
+  .inline-picker .modal-footer {
+    background: #fff;
+    padding: 10px 12px;
+  }
   @media (max-width: 640px) {
     .header,
     .body {
@@ -301,12 +342,16 @@ class DatasetteFilePicker extends HTMLElement {
   connectedCallback() {
     const column = this.getAttribute("column") || "";
     const currentFileId = this.getAttribute("current-file-id") || "";
+    const inline = this.getAttribute("mode") === "inline";
+    const titleId = "datasette-file-picker-title-" + Math.random().toString(36).slice(2);
 
     this.shadowRoot.innerHTML = `
       <style>${PICKER_STYLES}</style>
-      <dialog aria-labelledby="datasette-file-picker-title">
+      ${inline
+        ? `<div class="inline-picker" role="group" aria-labelledby="${titleId}">`
+        : `<dialog aria-labelledby="${titleId}">`}
         <div class="header">
-          <h3 id="datasette-file-picker-title">Select file for <em>${_escapeHtml(column)}</em></h3>
+          <h3 id="${titleId}">Select file for <em>${_escapeHtml(column)}</em></h3>
         </div>
         <div class="body">
           <input type="search" class="search" placeholder="Search files..." autofocus>
@@ -326,7 +371,7 @@ class DatasetteFilePicker extends HTMLElement {
         <div class="modal-footer">
           <button type="button" class="btn btn-ghost close-btn">Cancel</button>
         </div>
-      </dialog>
+      ${inline ? `</div>` : `</dialog>`}
     `;
 
     this._dialog = this.shadowRoot.querySelector("dialog");
@@ -349,7 +394,16 @@ class DatasetteFilePicker extends HTMLElement {
 
     // Close button
     this.shadowRoot.querySelector(".close-btn").addEventListener("click", () => this._done(null));
-    this._dialog.addEventListener("cancel", () => this._done(null));
+    if (this._dialog) {
+      this._dialog.addEventListener("cancel", () => this._done(null));
+    }
+    this.shadowRoot.addEventListener("keydown", (e) => {
+      if (inline && e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this._done(null);
+      }
+    });
 
     // Search with debounce
     this._searchInput.addEventListener("input", () => {
@@ -369,20 +423,27 @@ class DatasetteFilePicker extends HTMLElement {
     // Upload handler
     this._uploadBtn.addEventListener("click", () => this._handleUpload());
 
-    // Show the dialog and do initial load
-    this._dialog.showModal();
+    if (this._dialog) {
+      this._dialog.showModal();
+    } else {
+      requestAnimationFrame(() => this._searchInput.focus());
+    }
     this._doSearch("");
     this._loadSources();
   }
 
   disconnectedCallback() {
     clearTimeout(this._searchTimer);
+    if (!this._resolved && this._resolve) {
+      this._resolved = true;
+      this._resolve(null);
+    }
   }
 
   _done(fileId) {
     if (this._resolved) return;
     this._resolved = true;
-    if (this._dialog.open) this._dialog.close();
+    if (this._dialog && this._dialog.open) this._dialog.close();
     this.dispatchEvent(new CustomEvent("file-selected", {
       detail: { fileId },
       bubbles: true,
@@ -409,17 +470,19 @@ class DatasetteFilePicker extends HTMLElement {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`Search failed: ${resp.status}`);
       const data = await resp.json();
-      this._renderResults(data.files);
+      this._renderResults(data.files, q);
     } catch (err) {
       this._resultsList.innerHTML = `<li class="empty">Search error: ${_escapeHtml(err.message)}</li>`;
     }
   }
 
-  _renderResults(files) {
+  _renderResults(files, q = "") {
     const currentFileId = this.getAttribute("current-file-id") || "";
     this._resultsList.innerHTML = "";
     if (files.length === 0) {
-      this._resultsList.innerHTML = '<li class="empty">No files found</li>';
+      if (q) {
+        this._resultsList.innerHTML = '<li class="empty">No files found</li>';
+      }
       return;
     }
     for (const f of files) {

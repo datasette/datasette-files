@@ -1046,12 +1046,12 @@ async def test_files_edit_action_registered(datasette_with_files):
     assert "files-edit" in ds.actions
 
 
-# --- render_cell with data-column ---
+# --- render_cell ---
 
 
 @pytest.mark.asyncio
-async def test_render_cell_includes_data_column(datasette_browse_allowed, upload_dir):
-    """FileColumnType.render_cell includes data-column when table context is present."""
+async def test_render_cell_outputs_datasette_file(datasette_browse_allowed, upload_dir):
+    """FileColumnType.render_cell outputs the display web component."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
@@ -1067,15 +1067,16 @@ async def test_render_cell_includes_data_column(datasette_browse_allowed, upload
         request=None,
     )
     assert result is not None
-    assert 'data-column="document"' in result
     assert f'file-id="{file_id}"' in result
+    assert f'<a href="/-/files/{file_id}">{file_id}</a>' in result
+    assert "data-column" not in result
 
 
 @pytest.mark.asyncio
 async def test_render_cell_no_data_column_without_table(
     datasette_browse_allowed, upload_dir
 ):
-    """FileColumnType.render_cell omits data-column when table is None."""
+    """FileColumnType.render_cell does not add editing metadata."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
@@ -1113,8 +1114,10 @@ async def test_render_cell_no_match_for_non_file_id(datasette_browse_allowed):
 
 
 @pytest.mark.asyncio
-async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_dir):
-    """FileColumnType.render_cell escapes column names to prevent XSS."""
+async def test_render_cell_does_not_include_column_name(
+    datasette_browse_allowed, upload_dir
+):
+    """FileColumnType.render_cell no longer embeds column names."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
@@ -1131,7 +1134,7 @@ async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_
     )
     assert result is not None
     assert "<script>" not in result
-    assert "&lt;script&gt;" in result or "&#" in result
+    assert "data-column" not in result
 
 
 @pytest.mark.asyncio
@@ -1187,52 +1190,12 @@ async def test_table_page_only_renders_file_typed_columns(tmp_path):
     assert f">{file_id}</td>" in response.text
 
 
-# --- extra_body_script ---
+# --- extra_js_urls ---
 
 
 @pytest.mark.asyncio
-async def test_extra_body_script_on_table_page(tmp_path):
-    """extra_body_script emits window.__datasette_files on table pages."""
-    upload_dir = str(tmp_path / "uploads")
-    os.makedirs(upload_dir)
-
-    ds = Datasette(
-        [str(tmp_path / "test.db")],
-        config={
-            "plugins": {
-                "datasette-files": {
-                    "sources": {
-                        "test-src": {
-                            "storage": "filesystem",
-                            "config": {"root": upload_dir},
-                        }
-                    }
-                }
-            },
-            "permissions": {
-                "files-browse": True,
-            },
-        },
-    )
-    db = ds.get_database("test")
-    await db.execute_write(
-        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
-    )
-
-    # Visit the table page as anonymous user
-    response = await ds.client.get("/test/projects")
-    assert response.status_code == 200
-    assert "window.__datasette_files" in response.text
-    # Anonymous user cannot update rows by default
-    assert '"canUpdate": false' in response.text
-    assert '"database": "test"' in response.text
-    assert '"fileColumns": []' in response.text
-    assert '"table": "projects"' in response.text
-
-
-@pytest.mark.asyncio
-async def test_extra_body_script_includes_file_columns(tmp_path):
-    """extra_body_script includes typed file columns for table-page enhancement."""
+async def test_table_page_loads_file_field_for_file_columns(tmp_path):
+    """Table pages with file columns load the modal field plugin."""
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
 
@@ -1272,12 +1235,14 @@ async def test_extra_body_script_includes_file_columns(tmp_path):
 
     response = await ds.client.get("/test/projects")
     assert response.status_code == 200
-    assert '"fileColumns": ["logo"]' in response.text
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" in response.text
+    assert "window.__datasette_files" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_extra_body_script_with_update_permission(tmp_path):
-    """extra_body_script sets canUpdate true when actor has update-row permission."""
+async def test_table_page_skips_file_field_without_file_columns(tmp_path):
+    """Tables without file column types do not load the modal field plugin."""
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
 
@@ -1296,23 +1261,71 @@ async def test_extra_body_script_with_update_permission(tmp_path):
             },
             "permissions": {
                 "files-browse": True,
-                "update-row": True,
             },
         },
     )
     db = ds.get_database("test")
     await db.execute_write(
-        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT)"
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
     )
 
     response = await ds.client.get("/test/projects")
     assert response.status_code == 200
-    assert '"canUpdate": true' in response.text
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" not in response.text
+    assert "window.__datasette_files" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_extra_body_script_not_on_non_table_pages(tmp_path):
-    """extra_body_script does not emit on non-table pages like database index."""
+async def test_row_page_does_not_load_file_field(tmp_path):
+    """The modal field plugin is only needed on table pages."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+            },
+            "databases": {
+                "test": {
+                    "tables": {
+                        "projects": {
+                            "column_types": {
+                                "logo": "file",
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
+    )
+    await db.execute_write("INSERT INTO projects (id, name) VALUES (1, 'One')")
+
+    response = await ds.client.get("/test/projects/1")
+    assert response.status_code == 200
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_extra_body_script_removed_from_database_page(tmp_path):
+    """The old window.__datasette_files page global is no longer emitted."""
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
 
@@ -1337,6 +1350,8 @@ async def test_extra_body_script_not_on_non_table_pages(tmp_path):
     # Database page
     response = await ds.client.get("/test")
     assert response.status_code == 200
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" not in response.text
     assert "window.__datasette_files" not in response.text
 
 

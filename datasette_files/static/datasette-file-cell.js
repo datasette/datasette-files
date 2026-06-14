@@ -1,8 +1,5 @@
 // <datasette-file file-id="df-xxx"> web component
 // Batch-fetches metadata for all instances on the page in a single request.
-// Adds edit buttons when the user has update-row permission.
-
-import { openFilePicker } from "./datasette-file-picker.js";
 
 const BATCH_DELAY = 50; // ms to wait for more elements before fetching
 let _pendingIds = new Set();
@@ -52,9 +49,6 @@ async function _runBatch() {
 
   // Notify all waiting elements
   document.querySelectorAll("datasette-file").forEach((el) => el._onBatchComplete());
-
-  // After first batch, enhance empty cells in file columns
-  _enhanceEmptyFileCells();
 }
 
 const _FILE_ICON_STYLES = {
@@ -119,40 +113,6 @@ function _formatSize(bytes) {
   return gb.toFixed(1) + " GB";
 }
 
-function _getCsrfToken() {
-  const match = document.cookie.match(/ds_csrftoken=([^;]+)/);
-  return match ? match[1] : "";
-}
-
-function _getPkPath(element) {
-  const tr = element.closest("tr");
-  if (!tr) return null;
-  const pkCell = tr.querySelector("td.type-pk a");
-  if (!pkCell) return null;
-  const href = pkCell.getAttribute("href");
-  if (!href) return null;
-  // href is like "/demo/projects/1" — PK is everything after /{db}/{table}/
-  const parts = href.split("/");
-  // parts: ["", "demo", "projects", "1"] — PK is everything from index 3
-  return parts.slice(3).join("/");
-}
-
-async function _writeUpdate(database, table, pkPath, column, fileId) {
-  const resp = await fetch(`/${database}/${table}/${pkPath}/-/update`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-csrftoken": _getCsrfToken(),
-    },
-    body: JSON.stringify({ update: { [column]: fileId } }),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Update failed (${resp.status}): ${text}`);
-  }
-  return resp.json();
-}
-
 class DatasetteFile extends HTMLElement {
   connectedCallback() {
     this._fileId = this.getAttribute("file-id");
@@ -205,142 +165,7 @@ class DatasetteFile extends HTMLElement {
       this.appendChild(size);
     }
 
-    // Add edit button if we have column context and update permission
-    this._maybeAddEditButton();
-  }
-
-  _maybeAddEditButton() {
-    const ctx = window.__datasette_files;
-    if (!ctx || !ctx.canUpdate) return;
-    const column = this.getAttribute("data-column");
-    if (!column) return;
-
-    const btn = document.createElement("a");
-    btn.href = "#";
-    btn.textContent = "\u270e";
-    btn.title = "Change file";
-    btn.style.cssText = "margin-left:4px;text-decoration:none;color:#666;font-size:0.9em;";
-    btn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      await this._handleEdit(column);
-    });
-    this.appendChild(btn);
-  }
-
-  async _handleEdit(column) {
-    const ctx = window.__datasette_files;
-    if (!ctx) return;
-
-    const fileId = await openFilePicker({
-      column,
-      currentFileId: this._fileId,
-    });
-    if (fileId === null || fileId === this._fileId) return;
-
-    const pkPath = _getPkPath(this);
-    if (!pkPath) {
-      console.error("datasette-file: could not determine PK path");
-      return;
-    }
-
-    // "" means remove the file reference
-    const writeValue = fileId === "" ? null : fileId;
-
-    try {
-      await _writeUpdate(ctx.database, ctx.table, pkPath, column, writeValue);
-    } catch (err) {
-      alert("Failed to update: " + err.message);
-      return;
-    }
-
-    if (fileId === "") {
-      // Removed — reload to show empty cell
-      location.reload();
-      return;
-    }
-
-    // Re-render with new file
-    this.setAttribute("file-id", fileId);
-    this._fileId = fileId;
-    delete _cache[fileId];
-    _pendingIds.add(fileId);
-    _scheduleBatch();
   }
 }
 
 customElements.define("datasette-file", DatasetteFile);
-
-// --- Empty cell enhancement ---
-
-let _emptyEnhanced = false;
-
-function _fileColumnIndices(table, fileColumns) {
-  const indices = [];
-  const headers = Array.from(table.querySelectorAll("thead th"));
-  headers.forEach((th, idx) => {
-    const column = th.dataset.column;
-    if (column && fileColumns.includes(column)) {
-      indices.push({ index: idx, column });
-    }
-  });
-  return indices;
-}
-
-function _enhanceEmptyFileCells() {
-  if (_emptyEnhanced) return;
-
-  const ctx = window.__datasette_files;
-  if (!ctx || !ctx.canUpdate) return;
-
-  const table = document.querySelector("table.rows-and-columns");
-  if (!table) return;
-
-  const fileColumns = Array.isArray(ctx.fileColumns) ? ctx.fileColumns : [];
-  const fileColumnIndices = _fileColumnIndices(table, fileColumns);
-  if (fileColumnIndices.length === 0) return;
-
-  _emptyEnhanced = true;
-
-  // For each empty cell in a file column, inject an attach button
-  table.querySelectorAll("tbody tr").forEach((row) => {
-    fileColumnIndices.forEach(({ index, column }) => {
-      const td = row.children[index];
-      if (!td) return;
-      if (td.querySelector("datasette-file")) return;
-      if (td.querySelector(".datasette-file-attach")) return;
-      if (td.textContent.trim() !== "" && td.textContent.trim() !== "\u00a0") return;
-
-      const btn = document.createElement("a");
-      btn.className = "datasette-file-attach";
-      btn.href = "#";
-      btn.textContent = "+";
-      btn.title = "Attach file";
-      btn.style.cssText = "color:#666;text-decoration:none;font-size:1.2em;";
-      btn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const fileId = await openFilePicker({ column });
-        if (!fileId) return;
-
-        const pkPath = _getPkPath(td);
-        if (!pkPath) {
-          console.error("datasette-file: could not determine PK path");
-          return;
-        }
-
-        try {
-          await _writeUpdate(ctx.database, ctx.table, pkPath, column, fileId);
-          location.reload();
-        } catch (err) {
-          alert("Failed to update: " + err.message);
-        }
-      });
-      td.appendChild(btn);
-    });
-  });
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", _enhanceEmptyFileCells);
-} else {
-  _enhanceEmptyFileCells();
-}
