@@ -1559,6 +1559,27 @@ async def search_files(request, datasette):
 
     if not allowed_slugs:
         files = []
+    elif q and _FILE_ID_RE.match(q):
+        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        search_sql = """
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   f.created_at, f.uploaded_by, s.slug as source_slug
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE f.id = :file_id
+            AND s.slug IN ({placeholders})
+            {source_where}
+            LIMIT 1
+        """.format(
+            placeholders=placeholders,
+            source_where="AND s.slug = :source_filter" if source_filter else "",
+        )
+        params = {"file_id": q}
+        for i, slug in enumerate(allowed_slugs):
+            params[f"_slug_{i}"] = slug
+        if source_filter:
+            params["source_filter"] = source_filter
+        files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
     elif q:
         # Build prefix query: append * to each term for prefix matching, OR between terms
         terms = ['"{}"*'.format(term.replace('"', '""')) for term in q.split() if term]

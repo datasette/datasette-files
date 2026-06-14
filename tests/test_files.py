@@ -509,6 +509,36 @@ async def test_search_source_filter(datasette_browse_allowed, upload_dir):
     assert len(response.json()["files"]) == 0
 
 
+@pytest.mark.asyncio
+async def test_search_json_exact_file_id(datasette_browse_allowed, upload_dir):
+    """Searching for an exact file ID finds that file."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="image-with-boring-name.jpg", content=b"jpg")
+    file_id = data["file_id"]
+
+    response = await ds.client.get(f"/-/files/search.json?q={file_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert [file["id"] for file in data["files"]] == [file_id]
+    assert data["files"][0]["filename"] == "image-with-boring-name.jpg"
+
+
+@pytest.mark.asyncio
+async def test_search_json_exact_file_id_respects_source_filter(
+    datasette_browse_allowed, upload_dir
+):
+    """Searching for an exact file ID still respects source=."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="source-filtered-id.jpg", content=b"jpg")
+    file_id = data["file_id"]
+
+    response = await ds.client.get(
+        f"/-/files/search.json?q={file_id}&source=nonexistent"
+    )
+    assert response.status_code == 200
+    assert response.json()["files"] == []
+
+
 # --- Homepage action ---
 
 
