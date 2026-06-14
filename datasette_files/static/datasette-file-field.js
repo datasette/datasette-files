@@ -63,12 +63,6 @@ function fileUrl(fileId) {
   return "/-/files/" + encodeURIComponent(fileId);
 }
 
-function setInputValue(input, value) {
-  input.value = value || "";
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
 function renderCurrentFile(current, value) {
   current.textContent = "";
   if (!value) {
@@ -99,12 +93,11 @@ function renderCurrentFile(current, value) {
   current.appendChild(raw);
 }
 
-function renderFileField(node, field) {
+function renderFileField(field) {
   ensureFieldStyles();
 
   const input = field.input;
   input.type = "hidden";
-  input.dataset.originalValueType = "null";
   input.setAttribute("aria-hidden", "true");
 
   const wrap = document.createElement("div");
@@ -119,7 +112,7 @@ function renderFileField(node, field) {
 
   const current = document.createElement("div");
   current.className = "datasette-file-field-current";
-  renderCurrentFile(current, input.value);
+  renderCurrentFile(current, field.getValue());
 
   const actions = document.createElement("div");
   actions.className = "datasette-file-field-actions";
@@ -132,8 +125,8 @@ function renderFileField(node, field) {
   let pickerOpening = false;
 
   function updateButtons() {
-    chooseButton.textContent = input.value ? "Change file" : "Choose file";
-    removeButton.hidden = !input.value;
+    chooseButton.textContent = field.getValue() ? "Change file" : "Choose file";
+    removeButton.hidden = !field.getValue();
   }
 
   function closeInlinePicker(restoreFocus) {
@@ -165,8 +158,8 @@ function renderFileField(node, field) {
       inlinePicker = document.createElement("datasette-file-picker");
       inlinePicker.setAttribute("mode", "inline");
       inlinePicker.setAttribute("column", field.context.column);
-      if (input.value) {
-        inlinePicker.setAttribute("current-file-id", input.value);
+      if (field.getValue()) {
+        inlinePicker.setAttribute("current-file-id", field.getValue());
       }
       pickerWrap.textContent = "";
       pickerWrap.hidden = false;
@@ -182,9 +175,9 @@ function renderFileField(node, field) {
     pickerWrap.hidden = true;
     chooseButton.setAttribute("aria-expanded", "false");
 
-    if (fileId !== null && fileId !== input.value) {
-      setInputValue(input, fileId);
-      renderCurrentFile(current, input.value);
+    if (fileId !== null && fileId !== field.getValue()) {
+      field.setValue(fileId || null);
+      renderCurrentFile(current, field.getValue());
       updateButtons();
     }
     chooseButton.focus();
@@ -202,16 +195,16 @@ function renderFileField(node, field) {
   removeButton.textContent = "Remove file";
   removeButton.addEventListener("click", () => {
     closeInlinePicker(false);
-    setInputValue(input, "");
-    renderCurrentFile(current, input.value);
+    field.setValue(null);
+    renderCurrentFile(current, field.getValue());
     updateButtons();
     chooseButton.focus();
   });
   actions.appendChild(removeButton);
   updateButtons();
 
-  node.appendChild(input);
-  node.appendChild(wrap);
+  field.root.appendChild(input);
+  field.root.appendChild(wrap);
   wrap.appendChild(current);
   wrap.appendChild(actions);
   wrap.appendChild(pickerWrap);
@@ -227,14 +220,14 @@ document.addEventListener("datasette_init", function (event) {
       }
       return {
         render: renderFileField,
-        focus(node) {
-          const button = node.querySelector("button:not([hidden])");
+        focus(field) {
+          const button = field.root.querySelector("button:not([hidden])");
           if (button) {
             button.focus();
           }
         },
-        destroy(node) {
-          const picker = node.querySelector("datasette-file-picker");
+        destroy(field) {
+          const picker = field.root.querySelector("datasette-file-picker");
           if (picker) {
             picker.remove();
           }
