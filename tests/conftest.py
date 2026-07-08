@@ -12,7 +12,13 @@ def upload_dir(tmp_path):
     return str(d)
 
 
-def _make_datasette(upload_dir, permissions=None, extra_sources=None, databases=None):
+def _make_datasette(
+    upload_dir,
+    permissions=None,
+    extra_sources=None,
+    databases=None,
+    plugin_options=None,
+):
     """Create a Datasette instance configured with file sources and optional permissions."""
     sources = {
         "test-uploads": {
@@ -25,13 +31,10 @@ def _make_datasette(upload_dir, permissions=None, extra_sources=None, databases=
     if extra_sources:
         sources.update(extra_sources)
 
-    config = {
-        "plugins": {
-            "datasette-files": {
-                "sources": sources,
-            }
-        },
-    }
+    plugin_config = {"sources": sources}
+    if plugin_options:
+        plugin_config.update(plugin_options)
+    config = {"plugins": {"datasette-files": plugin_config}}
     if permissions:
         config["permissions"] = permissions
 

@@ -1,4 +1,6 @@
+import asyncio
 import io
+import os
 import pytest
 from PIL import Image
 from conftest import _make_datasette, _upload_file
@@ -445,3 +447,270 @@ async def test_thumbnail_deleted_with_file(datasette_all_permissions, upload_dir
         )
     ).first()
     assert row is None
+
+
+# --- Group 7: Resource safety policies ---
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_skips_source_larger_than_configured_limit(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={
+            "thumbnail_eager": False,
+            "thumbnail_max_source_bytes": 100,
+        },
+    )
+    data = await _upload_file(
+        ds,
+        filename="large.jpg",
+        content=_make_test_jpeg(),
+        content_type="image/jpeg",
+    )
+
+    response = await ds.client.get(f"/-/files/{data['file_id']}/thumbnail")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/svg+xml"
+    row = (
+        await ds.get_internal_database().execute(
+            "SELECT status, reason FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+            [data["file_id"]],
+        )
+    ).first()
+    assert dict(row) == {"status": "skipped", "reason": "too_large"}
+
+
+@pytest.mark.asyncio
+async def test_filesystem_bounded_read_rejects_actual_oversize_file(tmp_path):
+    from datasette_files.base import FileTooLarge
+    from datasette_files.filesystem import FilesystemStorage
+
+    storage = FilesystemStorage()
+    await storage.configure({"root": str(tmp_path)}, get_secret=None)
+    (tmp_path / "large.bin").write_bytes(b"x" * 101)
+    with pytest.raises(FileTooLarge):
+        await storage.read_file_limited("large.bin", 100)
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_rejects_image_over_pixel_limit(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={
+            "thumbnail_eager": False,
+            "thumbnail_max_pixels": 10_000,
+        },
+    )
+    data = await _upload_file(
+        ds,
+        filename="many-pixels.jpg",
+        content=_make_test_jpeg(200, 200),
+        content_type="image/jpeg",
+    )
+
+    response = await ds.client.get(f"/-/files/{data['file_id']}/thumbnail")
+    assert response.headers["content-type"] == "image/svg+xml"
+    row = (
+        await ds.get_internal_database().execute(
+            "SELECT reason FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+            [data["file_id"]],
+        )
+    ).first()
+    assert row["reason"] == "too_many_pixels"
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_eager_generation_can_be_disabled(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={"thumbnail_eager": False},
+    )
+    data = await _upload_file(
+        ds,
+        filename="lazy.jpg",
+        content=_make_test_jpeg(),
+        content_type="image/jpeg",
+    )
+    row = (
+        await ds.get_internal_database().execute(
+            "SELECT file_id FROM datasette_files_thumbnails WHERE file_id = ?",
+            [data["file_id"]],
+        )
+    ).first()
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_failed_generation_is_cached_and_generator_version_invalidates(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    calls = 0
+
+    class FailingPlugin:
+        __name__ = "FailingThumbnailPlugin"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class FailingGenerator:
+                name = "failing"
+                version = "1"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/x-failing"
+
+                async def generate(self, *args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    return None
+
+            self.generator = FailingGenerator()
+            return [self.generator]
+
+    plugin = FailingPlugin()
+    pm.register(plugin, name="undo_FailingThumbnailPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+            plugin_options={"thumbnail_eager": False},
+        )
+        data = await _upload_file(
+            ds,
+            filename="bad.fail",
+            content=b"not renderable",
+            content_type="application/x-failing",
+        )
+        url = f"/-/files/{data['file_id']}/thumbnail"
+        await ds.client.get(url)
+        await ds.client.get(url)
+        assert calls == 1
+
+        plugin.generator.version = "2"
+        await ds.client.get(url)
+        assert calls == 2
+    finally:
+        pm.unregister(name="undo_FailingThumbnailPlugin")
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_generation_timeout_is_negatively_cached(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    calls = 0
+
+    class SlowPlugin:
+        __name__ = "SlowThumbnailPlugin"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class SlowGenerator:
+                name = "slow"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/x-slow"
+
+                async def generate(self, *args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    await asyncio.sleep(0.2)
+
+            return [SlowGenerator()]
+
+    pm.register(SlowPlugin(), name="undo_SlowThumbnailPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+            plugin_options={
+                "thumbnail_eager": False,
+                "thumbnail_timeout_seconds": 0.01,
+            },
+        )
+        data = await _upload_file(
+            ds,
+            filename="slow.bin",
+            content=b"slow",
+            content_type="application/x-slow",
+        )
+        url = f"/-/files/{data['file_id']}/thumbnail"
+        response = await ds.client.get(url)
+        assert response.headers["content-type"] == "image/svg+xml"
+        await ds.client.get(url)
+        assert calls == 1
+        row = (
+            await ds.get_internal_database().execute(
+                "SELECT reason FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                [data["file_id"]],
+            )
+        ).first()
+        assert row["reason"] == "timeout"
+    finally:
+        pm.unregister(name="undo_SlowThumbnailPlugin")
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_generation_is_serialized_by_default(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    active = 0
+    maximum_active = 0
+
+    class ConcurrencyPlugin:
+        __name__ = "ConcurrencyThumbnailPlugin"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class ConcurrencyGenerator:
+                name = "concurrency"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/x-concurrency"
+
+                async def generate(self, *args, **kwargs):
+                    nonlocal active, maximum_active
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                    await asyncio.sleep(0.05)
+                    active -= 1
+                    return None
+
+            return [ConcurrencyGenerator()]
+
+    pm.register(ConcurrencyPlugin(), name="undo_ConcurrencyThumbnailPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+            plugin_options={"thumbnail_eager": False},
+        )
+        one = await _upload_file(
+            ds, filename="one.bin", content=b"1", content_type="application/x-concurrency"
+        )
+        two = await _upload_file(
+            ds, filename="two.bin", content=b"2", content_type="application/x-concurrency"
+        )
+        await asyncio.gather(
+            ds.client.get(f"/-/files/{one['file_id']}/thumbnail"),
+            ds.client.get(f"/-/files/{two['file_id']}/thumbnail"),
+        )
+        assert maximum_active == 1
+    finally:
+        pm.unregister(name="undo_ConcurrencyThumbnailPlugin")
+
+
+@pytest.mark.asyncio
+async def test_pillow_generation_runs_in_an_isolated_process():
+    from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
+
+    generator = PillowThumbnailGenerator()
+    result = await generator.generate(
+        _make_test_jpeg(), "image/jpeg", "isolated.jpg"
+    )
+    assert result is not None
+    assert generator.last_worker_pid != os.getpid()
