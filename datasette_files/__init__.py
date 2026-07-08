@@ -766,6 +766,14 @@ def startup(datasette):
                 for gen in result:
                     _thumbnail_generators.append(gen)
 
+        # Adopt thumbnails from databases created before cache keys existed.
+        # They were valid when generated; regenerating them under the current
+        # limits could permanently replace working thumbnails with icons.
+        await db.execute_write(
+            "UPDATE datasette_files_thumbnails SET cache_key = ? WHERE cache_key IS NULL",
+            [_thumbnail_cache_key()],
+        )
+
     return inner
 
 

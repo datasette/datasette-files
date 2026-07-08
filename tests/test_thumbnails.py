@@ -870,6 +870,40 @@ async def test_generator_can_mark_failure_as_policy_skip(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_existing_thumbnails_survive_upgrade_migration(upload_dir):
+    import datasette_files
+
+    ds = _make_datasette(
+        upload_dir, permissions={"files-browse": True, "files-upload": True}
+    )
+    data = await _upload_file(
+        ds,
+        filename="legacy.jpg",
+        content=_make_test_jpeg(),
+        content_type="image/jpeg",
+    )
+    file_id = data["file_id"]
+    db = ds.get_internal_database()
+
+    # Simulate a database created before cache keys existed, holding a file
+    # the new limits would refuse to regenerate
+    await db.execute_write(
+        "UPDATE datasette_files_thumbnails SET cache_key = NULL WHERE file_id = ?",
+        [file_id],
+    )
+    await db.execute_write(
+        "UPDATE datasette_files SET size = 999999999 WHERE id = ?", [file_id]
+    )
+
+    # Simulate a restart against the existing database
+    await datasette_files.startup(ds)()
+
+    response = await ds.client.get(f"/-/files/{file_id}/thumbnail")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.asyncio
 async def test_read_file_limited_default_reads_when_size_unknown():
     from datasette_files.base import (
         FileMetadata,
