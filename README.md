@@ -524,6 +524,11 @@ file-type icon. The outcome is cached so repeated page views do not repeat unsaf
 or expensive work. Successful and failed entries share a policy cache key; changing
 resource settings or a generator version invalidates them automatically.
 
+Policy decisions (file too large, unsupported type, over the pixel limit) stay
+cached until the policy changes. Failures that may be transient — storage read
+errors, generator crashes, and timeouts — are retried automatically after a
+five-minute cooldown.
+
 The byte limit is checked against recorded metadata and enforced by a bounded
 storage read. The built-in filesystem backend implements a genuinely bounded
 read. Third-party storage backends should override `read_file_limited()` to get

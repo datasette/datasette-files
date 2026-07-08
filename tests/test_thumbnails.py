@@ -705,6 +705,91 @@ async def test_thumbnail_generation_is_serialized_by_default(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_missing_source_does_not_permanently_break_thumbnails(upload_dir):
+    import datasette_files
+
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={"thumbnail_eager": False},
+    )
+    data = await _upload_file(
+        ds,
+        filename="transient.jpg",
+        content=_make_test_jpeg(),
+        content_type="image/jpeg",
+    )
+    url = f"/-/files/{data['file_id']}/thumbnail"
+
+    # Simulate the source being temporarily unavailable (e.g. removed from config)
+    storage = datasette_files._sources.pop("test-uploads")
+    try:
+        response = await ds.client.get(url)
+        assert response.headers["content-type"] == "image/svg+xml"
+    finally:
+        datasette_files._sources["test-uploads"] = storage
+
+    # Once the source is back, thumbnails should generate again
+    response = await ds.client.get(url)
+    assert response.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_failed_generation_is_retried_after_cooldown(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+
+    calls = 0
+
+    class FlakyPlugin:
+        __name__ = "FlakyThumbnailPlugin"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class FlakyGenerator:
+                name = "flaky"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/x-flaky"
+
+                async def generate(self, *args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    raise RuntimeError("transient failure")
+
+            return [FlakyGenerator()]
+
+    pm.register(FlakyPlugin(), name="undo_FlakyThumbnailPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+            plugin_options={"thumbnail_eager": False},
+        )
+        data = await _upload_file(
+            ds,
+            filename="flaky.bin",
+            content=b"flaky",
+            content_type="application/x-flaky",
+        )
+        url = f"/-/files/{data['file_id']}/thumbnail"
+        await ds.client.get(url)
+        await ds.client.get(url)
+        assert calls == 1  # Within the cooldown the failure stays cached
+
+        # Backdate the failure past the retry cooldown
+        await ds.get_internal_database().execute_write(
+            """UPDATE datasette_files_thumbnail_failures
+               SET created_at = datetime('now', '-1 hour') WHERE file_id = ?""",
+            [data["file_id"]],
+        )
+        await ds.client.get(url)
+        assert calls == 2
+    finally:
+        pm.unregister(name="undo_FlakyThumbnailPlugin")
+
+
+@pytest.mark.asyncio
 async def test_read_file_limited_default_reads_when_size_unknown():
     from datasette_files.base import (
         FileMetadata,

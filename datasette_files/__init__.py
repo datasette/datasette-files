@@ -57,6 +57,10 @@ _DEFAULT_THUMBNAIL_MAX_PIXELS = 12_000_000
 _DEFAULT_THUMBNAIL_CONCURRENCY = 1
 _DEFAULT_THUMBNAIL_TIMEOUT_SECONDS = 10.0
 _DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
+# Cached "failed" thumbnail outcomes (read errors, generator crashes, timeouts)
+# are retried after this many seconds; "skipped" outcomes are policy decisions
+# and persist until the policy cache key changes.
+_THUMBNAIL_FAILURE_RETRY_SECONDS = 300
 
 pm.add_hookspecs(hookspecs)
 
@@ -1469,12 +1473,18 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
 
         failure = (
             await db.execute(
-                "SELECT cache_key FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                """SELECT cache_key, status,
+                      (julianday('now') - julianday(created_at)) * 86400 AS age_seconds
+                   FROM datasette_files_thumbnail_failures WHERE file_id = ?""",
                 [file_id],
             )
         ).first()
         if failure:
-            if failure["cache_key"] == cache_key:
+            retryable = failure["status"] == "failed" and (
+                failure["age_seconds"] is None
+                or failure["age_seconds"] > _THUMBNAIL_FAILURE_RETRY_SECONDS
+            )
+            if failure["cache_key"] == cache_key and not retryable:
                 return ("failure", None)
             await db.execute_write(
                 "DELETE FROM datasette_files_thumbnail_failures WHERE file_id = ?",
@@ -1501,7 +1511,8 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
     source_slug = row["source_slug"]
 
     if source_slug not in _sources:
-        await cache_failure("failed", "source_unavailable")
+        # A missing source is a configuration state, not a property of the file:
+        # detecting it costs nothing and it may come back, so never cache it.
         return None
 
     storage = _sources[source_slug]
