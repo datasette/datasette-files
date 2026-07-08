@@ -705,6 +705,61 @@ async def test_thumbnail_generation_is_serialized_by_default(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_read_file_limited_default_reads_when_size_unknown():
+    from datasette_files.base import (
+        FileMetadata,
+        FileTooLarge,
+        Storage,
+        StorageCapabilities,
+    )
+
+    class UnknownSizeStorage(Storage):
+        storage_type = "unknown-size"
+        capabilities = StorageCapabilities()
+        content = b"tiny"
+
+        async def configure(self, config, get_secret):
+            pass
+
+        async def get_file_metadata(self, path):
+            return FileMetadata(path=path, filename=path)
+
+        async def read_file(self, path):
+            return self.content
+
+    storage = UnknownSizeStorage()
+    assert await storage.read_file_limited("small.jpg", 100) == b"tiny"
+
+    oversized = UnknownSizeStorage()
+    oversized.content = b"x" * 101
+    with pytest.raises(FileTooLarge):
+        await oversized.read_file_limited("large.jpg", 100)
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_generated_when_recorded_size_is_unknown(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={"thumbnail_eager": False},
+    )
+    data = await _upload_file(
+        ds,
+        filename="nosize.jpg",
+        content=_make_test_jpeg(),
+        content_type="image/jpeg",
+    )
+    db = ds.get_internal_database()
+    await db.execute_write(
+        "UPDATE datasette_files SET size = NULL WHERE id = ?", [data["file_id"]]
+    )
+
+    response = await ds.client.get(f"/-/files/{data['file_id']}/thumbnail")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.asyncio
 async def test_pillow_generation_runs_in_an_isolated_process():
     from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
 

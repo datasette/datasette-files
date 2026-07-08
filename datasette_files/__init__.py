@@ -1521,7 +1521,7 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
         await cache_failure("skipped", "unsupported")
         return None
 
-    if row["size"] is None or row["size"] > _thumbnail_settings.max_source_bytes:
+    if row["size"] is not None and row["size"] > _thumbnail_settings.max_source_bytes:
         await cache_failure("skipped", "too_large")
         return None
 

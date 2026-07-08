@@ -95,7 +95,7 @@ class Storage(ABC):
         metadata = await self.get_file_metadata(path)
         if metadata is None:
             raise FileNotFoundError(f"File not found: {path}")
-        if metadata.size is None or metadata.size > max_bytes:
+        if metadata.size is not None and metadata.size > max_bytes:
             raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
         content = await self.read_file(path)
         if len(content) > max_bytes:
