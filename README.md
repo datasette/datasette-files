@@ -508,16 +508,23 @@ plugins:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `thumbnail_max_source_bytes` | 10 MB | Skip generation before reading a larger source file |
-| `thumbnail_max_pixels` | 12,000,000 | Reject raster images whose decoded width × height is larger |
+| `thumbnail_max_pixels` | 12,000,000 | Built-in generator only: reject raster images whose decoded width × height is larger |
 | `thumbnail_concurrency` | 1 | Maximum number of files being read and rendered concurrently |
 | `thumbnail_timeout_seconds` | 10 | Per-generator timeout, including the built-in worker |
-| `thumbnail_process_memory_limit_bytes` | 128 MB | Address-space limit for the Pillow subprocess on Linux |
+| `thumbnail_process_memory_limit_bytes` | 128 MB | Built-in generator only: address-space limit for the Pillow subprocess on Linux |
 | `thumbnail_eager` | `true` | Generate after upload; set to `false` to wait for the first request |
 
-The built-in Pillow generator always runs in a separate process. On Linux that
-process also receives the configured operating-system memory limit. Other
-platforms still get process isolation, byte and pixel limits, serialization, and
-the timeout, but not the OS address-space limit.
+The byte limit, concurrency limit and timeout apply to every generator. The
+pixel limit, process isolation and memory limit are properties of the built-in
+Pillow generator: it always runs in a separate process, and on Linux that
+process also receives the configured operating-system memory limit (other
+platforms still get process isolation but not the address-space limit).
+
+Third-party thumbnail generators run in the Datasette process and receive the
+full file bytes; the pixel and memory settings above do not constrain them.
+Generator plugins that decode untrusted formats should implement their own
+equivalent safeguards, such as subprocess isolation and decompression-bomb
+checks.
 
 Files that exceed a limit, time out, or fail generation receive the normal SVG
 file-type icon. The outcome is cached so repeated page views do not repeat unsafe
