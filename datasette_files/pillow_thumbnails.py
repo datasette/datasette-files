@@ -1,6 +1,5 @@
 import asyncio
 import json
-import subprocess
 import sys
 from typing import Optional
 
@@ -15,41 +14,12 @@ SUPPORTED_CONTENT_TYPES = {
     "image/tiff",
 }
 
+_WORKER_COMMAND = [sys.executable, "-m", "datasette_files.pillow_worker"]
 
-def _run_worker(
-    file_bytes: bytes,
-    max_width: int,
-    max_height: int,
-    max_pixels: int,
-    memory_limit_bytes: int,
-    timeout_seconds: float,
-) -> tuple[ThumbnailResult, int]:
-    metadata = json.dumps(
-        {
-            "max_width": max_width,
-            "max_height": max_height,
-            "max_pixels": max_pixels,
-            "memory_limit_bytes": memory_limit_bytes,
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-    process = subprocess.Popen(
-        [sys.executable, "-m", "datasette_files.pillow_worker"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        stdout, _ = process.communicate(
-            metadata + b"\n" + file_bytes, timeout=timeout_seconds
-        )
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
-        raise ThumbnailGenerationError("timeout")
 
+def _parse_worker_response(stdout: bytes, returncode) -> tuple[ThumbnailResult, int]:
     header, separator, thumbnail = stdout.partition(b"\n")
-    if process.returncode or not separator:
+    if returncode or not separator:
         raise ThumbnailGenerationError("generation_failed")
     try:
         response = json.loads(header)
@@ -80,11 +50,9 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
         *,
         max_pixels: int = 12_000_000,
         memory_limit_bytes: int = 128 * 1024 * 1024,
-        timeout_seconds: float = 10.0,
     ):
         self.max_pixels = max_pixels
         self.memory_limit_bytes = memory_limit_bytes
-        self.timeout_seconds = timeout_seconds
         self.last_worker_pid = None
 
     async def can_generate(self, content_type: str, filename: str) -> bool:
@@ -98,14 +66,30 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
         max_width: int = 200,
         max_height: int = 200,
     ) -> Optional[ThumbnailResult]:
-        result, worker_pid = await asyncio.to_thread(
-            _run_worker,
-            file_bytes,
-            max_width,
-            max_height,
-            self.max_pixels,
-            self.memory_limit_bytes,
-            self.timeout_seconds,
+        header = json.dumps(
+            {
+                "max_width": max_width,
+                "max_height": max_height,
+                "max_pixels": self.max_pixels,
+                "memory_limit_bytes": self.memory_limit_bytes,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        process = await asyncio.create_subprocess_exec(
+            *_WORKER_COMMAND,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        try:
+            stdout, _ = await process.communicate(header + b"\n" + file_bytes)
+        except asyncio.CancelledError:
+            # The coordinator's timeout (or a dropped request) cancelled this
+            # coroutine. The worker must not outlive it: its memory belongs to
+            # the concurrency slot that is about to be released.
+            process.kill()
+            await process.wait()
+            raise
+        result, worker_pid = _parse_worker_response(stdout, process.returncode)
         self.last_worker_pid = worker_pid
         return result

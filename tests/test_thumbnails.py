@@ -994,6 +994,53 @@ async def test_thumbnail_generated_when_recorded_size_is_unknown(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_generation_kills_worker_process(monkeypatch, tmp_path):
+    import sys
+    from datasette_files import pillow_thumbnails
+
+    pid_file = tmp_path / "worker.pid"
+    fake_worker = (
+        "import os, sys, time\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "sys.stdin.buffer.read()\n"
+        "time.sleep(30)\n"
+    )
+    monkeypatch.setattr(
+        pillow_thumbnails,
+        "_WORKER_COMMAND",
+        [sys.executable, "-c", fake_worker],
+        raising=False,
+    )
+
+    generator = pillow_thumbnails.PillowThumbnailGenerator()
+    task = asyncio.create_task(generator.generate(b"x", "image/jpeg", "slow.jpg"))
+    for _ in range(200):
+        if pid_file.exists() and pid_file.read_text():
+            break
+        await asyncio.sleep(0.05)
+    else:
+        task.cancel()
+        pytest.fail("worker subprocess never started")
+    pid = int(pid_file.read_text())
+
+    # This is what the coordinator's timeout does to a slow generator
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The worker must not outlive the cancelled request
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("worker subprocess survived cancellation")
+
+
+@pytest.mark.asyncio
 async def test_pillow_generation_runs_in_an_isolated_process():
     from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
 

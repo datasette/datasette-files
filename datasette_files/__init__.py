@@ -2407,6 +2407,5 @@ def register_thumbnail_generators(datasette):
         PillowThumbnailGenerator(
             max_pixels=settings.max_pixels,
             memory_limit_bytes=settings.memory_limit_bytes,
-            timeout_seconds=settings.timeout_seconds,
         )
     ]
