@@ -697,27 +697,22 @@ async def _check_browse_permission(datasette, request, source_slug):
 # --- Startup ---
 
 
+async def _ensure_column(db, table, column, definition):
+    """Add a column to an existing table if it is missing (migration helper)."""
+    columns = (await db.execute(f"PRAGMA table_info({table})")).rows
+    if column not in {row["name"] for row in columns}:
+        await db.execute_write(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 @hookimpl
 def startup(datasette):
     async def inner():
         db = datasette.get_internal_database()
         await db.execute_write_script(CREATE_SQL)
 
-        # Migrate: add search_text column if missing (pre-existing databases)
-        columns = (await db.execute("PRAGMA table_info(datasette_files)")).rows
-        col_names = {row["name"] for row in columns}
-        if "search_text" not in col_names:
-            await db.execute_write(
-                "ALTER TABLE datasette_files ADD COLUMN search_text TEXT DEFAULT ''"
-            )
-
-        thumbnail_columns = (
-            await db.execute("PRAGMA table_info(datasette_files_thumbnails)")
-        ).rows
-        if "cache_key" not in {row["name"] for row in thumbnail_columns}:
-            await db.execute_write(
-                "ALTER TABLE datasette_files_thumbnails ADD COLUMN cache_key TEXT"
-            )
+        # Migrate pre-existing databases
+        await _ensure_column(db, "datasette_files", "search_text", "TEXT DEFAULT ''")
+        await _ensure_column(db, "datasette_files_thumbnails", "cache_key", "TEXT")
 
         # Drop and recreate FTS table + triggers to ensure schema matches
         # (safe because FTS is a secondary index rebuilt from content table)

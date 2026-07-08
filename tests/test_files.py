@@ -103,6 +103,26 @@ async def test_filesystem_storage_configure(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_ensure_column_adds_missing_column_once(datasette_with_files):
+    from datasette_files import _ensure_column
+
+    ds = datasette_with_files
+    await ds.invoke_startup()
+    db = ds.get_internal_database()
+    await db.execute_write("CREATE TABLE migration_demo (id INTEGER PRIMARY KEY)")
+
+    await _ensure_column(db, "migration_demo", "extra", "TEXT DEFAULT ''")
+    # Idempotent: a second call must not raise
+    await _ensure_column(db, "migration_demo", "extra", "TEXT DEFAULT ''")
+
+    columns = {
+        row["name"]
+        for row in (await db.execute("PRAGMA table_info(migration_demo)")).rows
+    }
+    assert columns == {"id", "extra"}
+
+
+@pytest.mark.asyncio
 async def test_configured_max_file_size_rejects_oversized_upload(upload_dir):
     ds = _make_datasette(
         upload_dir,
