@@ -91,6 +91,59 @@ async def test_filesystem_storage_configure(upload_dir):
         {"root": upload_dir, "max_file_size": 1234}, get_secret=None
     )
     assert configured.capabilities.max_file_size == 1234
+    # Only max_file_size may differ from the class-level capabilities
+    import dataclasses
+
+    for field in dataclasses.fields(configured.capabilities):
+        if field.name == "max_file_size":
+            continue
+        assert getattr(configured.capabilities, field.name) == getattr(
+            FilesystemStorage.capabilities, field.name
+        )
+
+
+@pytest.mark.asyncio
+async def test_configured_max_file_size_rejects_oversized_upload(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-upload": True},
+        extra_sources={
+            "test-uploads": {
+                "storage": "filesystem",
+                "config": {"root": upload_dir, "max_file_size": 100},
+            }
+        },
+    )
+    content = b"x" * 200
+    prepare = await ds.client.post(
+        "/-/files/upload/test-uploads/-/prepare",
+        content=json.dumps(
+            {
+                "filename": "big.bin",
+                "content_type": "application/octet-stream",
+                "size": len(content),
+            }
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    assert prepare.status_code == 200
+    token = prepare.json()["upload_token"]
+
+    upload = await ds.client.post(
+        "/-/files/upload/test-uploads/-/upload",
+        content=(
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="upload_token"\r\n'
+            b"\r\n" + token.encode() + b"\r\n"
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="big.bin"\r\n'
+            b"Content-Type: application/octet-stream\r\n"
+            b"\r\n" + content + b"\r\n"
+            b"--boundary--\r\n"
+        ),
+        headers={"Content-Type": "multipart/form-data; boundary=boundary"},
+    )
+    assert upload.status_code != 200
 
 
 @pytest.mark.asyncio

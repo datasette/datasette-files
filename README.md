@@ -921,6 +921,10 @@ The built-in `FilesystemStorage` stores files on the local filesystem. It suppor
 | `root` | Yes | Absolute path to the directory where files are stored |
 | `max_file_size` | No | Maximum upload size in bytes (defaults to 100 MB) |
 
+Note: earlier releases silently ignored a configured `max_file_size` and always
+applied the 100 MB default. The option is now enforced — uploads larger than a
+configured limit are rejected.
+
 **Capabilities:**
 
 | Capability | Value |

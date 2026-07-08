@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 from pathlib import Path
 from typing import AsyncIterator, Optional
@@ -19,12 +20,8 @@ class FilesystemStorage(Storage):
 
     async def configure(self, config: dict, get_secret) -> None:
         self.root = Path(config["root"]).resolve()
-        self.capabilities = StorageCapabilities(
-            can_upload=True,
-            can_delete=True,
-            can_list=True,
-            can_generate_signed_urls=False,
-            requires_proxy_download=True,
+        self.capabilities = dataclasses.replace(
+            FilesystemStorage.capabilities,
             max_file_size=config.get("max_file_size"),
         )
         self.root.mkdir(parents=True, exist_ok=True)
