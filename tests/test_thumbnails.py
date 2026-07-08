@@ -790,6 +790,39 @@ async def test_failed_generation_is_retried_after_cooldown(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_cached_thumbnail_outcome_needs_a_single_cache_query(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={"thumbnail_eager": False},
+    )
+    data = await _upload_file(
+        ds, filename="doc.txt", content=b"hello", content_type="text/plain"
+    )
+    url = f"/-/files/{data['file_id']}/thumbnail"
+    # First request caches the skipped/unsupported outcome
+    await ds.client.get(url)
+
+    db = ds.get_internal_database()
+    executed = []
+    original_execute = db.execute
+
+    def spying_execute(sql, *args, **kwargs):
+        executed.append(sql)
+        return original_execute(sql, *args, **kwargs)
+
+    db.execute = spying_execute
+    try:
+        response = await ds.client.get(url)
+    finally:
+        db.execute = original_execute
+
+    assert response.headers["content-type"] == "image/svg+xml"
+    cache_queries = [sql for sql in executed if "datasette_files_thumbnail" in sql]
+    assert len(cache_queries) == 1
+
+
+@pytest.mark.asyncio
 async def test_read_file_limited_default_reads_when_size_unknown():
     from datasette_files.base import (
         FileMetadata,

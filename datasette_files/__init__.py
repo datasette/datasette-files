@@ -1449,48 +1449,47 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
     cache_key = _thumbnail_cache_key()
 
     async def cache_state():
-        cached = (
+        """Return (hit, result): (True, ThumbnailResult) for a cached thumbnail,
+        (True, None) for a cached failure, (False, None) on a miss."""
+        rows = (
             await db.execute(
-                """SELECT thumbnail, content_type, width, height, cache_key
-                   FROM datasette_files_thumbnails WHERE file_id = ?""",
-                [file_id],
+                """
+                SELECT 'thumbnail' AS kind, thumbnail, content_type, width, height,
+                       cache_key, NULL AS status, NULL AS age_seconds
+                FROM datasette_files_thumbnails WHERE file_id = :file_id
+                UNION ALL
+                SELECT 'failure', NULL, NULL, NULL, NULL, cache_key, status,
+                       (julianday('now') - julianday(created_at)) * 86400
+                FROM datasette_files_thumbnail_failures WHERE file_id = :file_id
+                """,
+                {"file_id": file_id},
             )
-        ).first()
-        if cached:
-            if cached["cache_key"] == cache_key:
-                return (
-                    "thumbnail",
-                    ThumbnailResult(
+        ).rows
+        for cached in rows:
+            if cached["kind"] == "thumbnail":
+                if cached["cache_key"] == cache_key:
+                    return True, ThumbnailResult(
                         thumb_bytes=cached["thumbnail"],
                         content_type=cached["content_type"],
                         width=cached["width"],
                         height=cached["height"],
-                    ),
+                    )
+                await db.execute_write(
+                    "DELETE FROM datasette_files_thumbnails WHERE file_id = ?",
+                    [file_id],
                 )
-            await db.execute_write(
-                "DELETE FROM datasette_files_thumbnails WHERE file_id = ?", [file_id]
-            )
-
-        failure = (
-            await db.execute(
-                """SELECT cache_key, status,
-                      (julianday('now') - julianday(created_at)) * 86400 AS age_seconds
-                   FROM datasette_files_thumbnail_failures WHERE file_id = ?""",
-                [file_id],
-            )
-        ).first()
-        if failure:
-            retryable = failure["status"] == "failed" and (
-                failure["age_seconds"] is None
-                or failure["age_seconds"] > _THUMBNAIL_FAILURE_RETRY_SECONDS
-            )
-            if failure["cache_key"] == cache_key and not retryable:
-                return ("failure", None)
-            await db.execute_write(
-                "DELETE FROM datasette_files_thumbnail_failures WHERE file_id = ?",
-                [file_id],
-            )
-        return ("miss", None)
+            else:
+                retryable = cached["status"] == "failed" and (
+                    cached["age_seconds"] is None
+                    or cached["age_seconds"] > _THUMBNAIL_FAILURE_RETRY_SECONDS
+                )
+                if cached["cache_key"] == cache_key and not retryable:
+                    return True, None
+                await db.execute_write(
+                    "DELETE FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                    [file_id],
+                )
+        return False, None
 
     async def cache_failure(status, reason, generator=None):
         await db.execute_write(
@@ -1500,11 +1499,9 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
             [file_id, status, reason, generator, cache_key],
         )
 
-    state, cached_result = await cache_state()
-    if state == "thumbnail":
+    hit, cached_result = await cache_state()
+    if hit:
         return cached_result
-    if state == "failure":
-        return None
 
     content_type = row["content_type"] or ""
     filename = row["filename"]
@@ -1539,11 +1536,9 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
     async with _thumbnail_semaphore:
         # A concurrent request for this file may have populated a cache while this
         # request was waiting for the single generation slot.
-        state, cached_result = await cache_state()
-        if state == "thumbnail":
+        hit, cached_result = await cache_state()
+        if hit:
             return cached_result
-        if state == "failure":
-            return None
 
         try:
             file_bytes = await storage.read_file_limited(
