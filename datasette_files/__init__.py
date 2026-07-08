@@ -20,7 +20,12 @@ from datasette.utils import await_me_maybe
 from markupsafe import Markup
 from ulid import ULID
 from . import hookspecs
-from .base import FileMetadata, StorageCapabilities as StorageCapabilities
+from .base import (
+    FileMetadata,
+    FileTooLarge,
+    StorageCapabilities as StorageCapabilities,
+    ThumbnailGenerationError,
+)
 from .filesystem import FilesystemStorage
 
 _FILE_ID_RE = re.compile(r"^df-[a-z0-9]{26}$")
@@ -47,6 +52,11 @@ _upload_tokens: dict[str, UploadToken] = {}
 _UPLOAD_TOKEN_TTL = 3600  # 1 hour
 _DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 _MAX_FILENAME_BYTES = 255
+_DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES = 10 * 1024 * 1024
+_DEFAULT_THUMBNAIL_MAX_PIXELS = 12_000_000
+_DEFAULT_THUMBNAIL_CONCURRENCY = 1
+_DEFAULT_THUMBNAIL_TIMEOUT_SECONDS = 10.0
+_DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
 
 pm.add_hookspecs(hookspecs)
 
@@ -60,6 +70,80 @@ _source_meta = {}
 
 # Registry of thumbnail generators (populated in startup)
 _thumbnail_generators: list = []
+
+
+@dataclass
+class ThumbnailSettings:
+    max_source_bytes: int = _DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES
+    max_pixels: int = _DEFAULT_THUMBNAIL_MAX_PIXELS
+    concurrency: int = _DEFAULT_THUMBNAIL_CONCURRENCY
+    timeout_seconds: float = _DEFAULT_THUMBNAIL_TIMEOUT_SECONDS
+    memory_limit_bytes: int = _DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES
+    eager: bool = True
+
+
+_thumbnail_settings = ThumbnailSettings()
+_thumbnail_semaphore = asyncio.Semaphore(_DEFAULT_THUMBNAIL_CONCURRENCY)
+
+
+def _positive_number(config, key, default, converter):
+    value = converter(config.get(key, default))
+    if value <= 0:
+        raise ValueError(f"{key} must be greater than zero")
+    return value
+
+
+def _thumbnail_settings_from_config(config):
+    eager = config.get("thumbnail_eager", True)
+    if isinstance(eager, str):
+        eager = eager.lower() not in {"0", "false", "no", "off"}
+    return ThumbnailSettings(
+        max_source_bytes=_positive_number(
+            config,
+            "thumbnail_max_source_bytes",
+            _DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES,
+            int,
+        ),
+        max_pixels=_positive_number(
+            config, "thumbnail_max_pixels", _DEFAULT_THUMBNAIL_MAX_PIXELS, int
+        ),
+        concurrency=_positive_number(
+            config,
+            "thumbnail_concurrency",
+            _DEFAULT_THUMBNAIL_CONCURRENCY,
+            int,
+        ),
+        timeout_seconds=_positive_number(
+            config,
+            "thumbnail_timeout_seconds",
+            _DEFAULT_THUMBNAIL_TIMEOUT_SECONDS,
+            float,
+        ),
+        memory_limit_bytes=_positive_number(
+            config,
+            "thumbnail_process_memory_limit_bytes",
+            _DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES,
+            int,
+        ),
+        eager=bool(eager),
+    )
+
+
+def _thumbnail_cache_key():
+    generators = [
+        [generator.name, str(getattr(generator, "version", "1"))]
+        for generator in _thumbnail_generators
+    ]
+    policy = {
+        "max_source_bytes": _thumbnail_settings.max_source_bytes,
+        "max_pixels": _thumbnail_settings.max_pixels,
+        "timeout_seconds": _thumbnail_settings.timeout_seconds,
+        "memory_limit_bytes": _thumbnail_settings.memory_limit_bytes,
+        "generators": generators,
+    }
+    return hashlib.sha256(
+        json.dumps(policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 # --- SVG file-type icon generation ---
 
@@ -285,6 +369,16 @@ CREATE TABLE IF NOT EXISTS datasette_files_thumbnails (
     width INTEGER,
     height INTEGER,
     generator TEXT,
+    cache_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS datasette_files_thumbnail_failures (
+    file_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    generator TEXT,
+    cache_key TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
@@ -564,6 +658,7 @@ async def _check_browse_permission(datasette, request, source_slug):
 @hookimpl
 def startup(datasette):
     async def inner():
+        global _thumbnail_semaphore, _thumbnail_settings
         db = datasette.get_internal_database()
         await db.execute_write_script(CREATE_SQL)
 
@@ -573,6 +668,14 @@ def startup(datasette):
         if "search_text" not in col_names:
             await db.execute_write(
                 "ALTER TABLE datasette_files ADD COLUMN search_text TEXT DEFAULT ''"
+            )
+
+        thumbnail_columns = (
+            await db.execute("PRAGMA table_info(datasette_files_thumbnails)")
+        ).rows
+        if "cache_key" not in {row["name"] for row in thumbnail_columns}:
+            await db.execute_write(
+                "ALTER TABLE datasette_files_thumbnails ADD COLUMN cache_key TEXT"
             )
 
         # Drop and recreate FTS table + triggers to ensure schema matches
@@ -602,6 +705,8 @@ def startup(datasette):
 
         # Read source definitions from plugin config
         config = datasette.plugin_config("datasette-files") or {}
+        _thumbnail_settings = _thumbnail_settings_from_config(config)
+        _thumbnail_semaphore = asyncio.Semaphore(_thumbnail_settings.concurrency)
         sources_config = config.get("sources") or {}
 
         for slug, source_def in sources_config.items():
@@ -967,11 +1072,12 @@ async def upload_complete(request, datasette):
     # Fetch the created record for the response
     row = await _get_file_record(datasette, file_id)
 
-    # Eagerly generate thumbnails when a registered generator can handle the file.
-    try:
-        await _get_or_generate_thumbnail(datasette, file_id, row)
-    except Exception:
-        pass  # Non-fatal: thumbnail will be generated lazily on first request
+    # Eager generation is optional and failure is always non-fatal to uploads.
+    if _thumbnail_settings.eager:
+        try:
+            await _get_or_generate_thumbnail(datasette, file_id, row)
+        except Exception:
+            pass  # Thumbnail generation remains lazy/retryable where appropriate
 
     return Response.json(
         {
@@ -1029,6 +1135,9 @@ async def file_delete(request, datasette):
     db = datasette.get_internal_database()
     await db.execute_write(
         "DELETE FROM datasette_files_thumbnails WHERE file_id = ?", [file_id]
+    )
+    await db.execute_write(
+        "DELETE FROM datasette_files_thumbnail_failures WHERE file_id = ?", [file_id]
     )
     await db.execute_write("DELETE FROM datasette_files WHERE id = ?", [file_id])
 
@@ -1333,26 +1442,66 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
     from .base import ThumbnailResult
 
     db = datasette.get_internal_database()
+    cache_key = _thumbnail_cache_key()
 
-    cached = (
-        await db.execute(
-            "SELECT thumbnail, content_type, width, height FROM datasette_files_thumbnails WHERE file_id = ?",
-            [file_id],
+    async def cache_state():
+        cached = (
+            await db.execute(
+                """SELECT thumbnail, content_type, width, height, cache_key
+                   FROM datasette_files_thumbnails WHERE file_id = ?""",
+                [file_id],
+            )
+        ).first()
+        if cached:
+            if cached["cache_key"] == cache_key:
+                return (
+                    "thumbnail",
+                    ThumbnailResult(
+                        thumb_bytes=cached["thumbnail"],
+                        content_type=cached["content_type"],
+                        width=cached["width"],
+                        height=cached["height"],
+                    ),
+                )
+            await db.execute_write(
+                "DELETE FROM datasette_files_thumbnails WHERE file_id = ?", [file_id]
+            )
+
+        failure = (
+            await db.execute(
+                "SELECT cache_key FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                [file_id],
+            )
+        ).first()
+        if failure:
+            if failure["cache_key"] == cache_key:
+                return ("failure", None)
+            await db.execute_write(
+                "DELETE FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                [file_id],
+            )
+        return ("miss", None)
+
+    async def cache_failure(status, reason, generator=None):
+        await db.execute_write(
+            """INSERT OR REPLACE INTO datasette_files_thumbnail_failures
+               (file_id, status, reason, generator, cache_key, created_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+            [file_id, status, reason, generator, cache_key],
         )
-    ).first()
-    if cached:
-        return ThumbnailResult(
-            thumb_bytes=cached["thumbnail"],
-            content_type=cached["content_type"],
-            width=cached["width"],
-            height=cached["height"],
-        )
+
+    state, cached_result = await cache_state()
+    if state == "thumbnail":
+        return cached_result
+    if state == "failure":
+        return None
 
     content_type = row["content_type"] or ""
     filename = row["filename"]
     source_slug = row["source_slug"]
 
     if source_slug not in _sources:
+        await cache_failure("failed", "source_unavailable")
         return None
 
     storage = _sources[source_slug]
@@ -1360,41 +1509,86 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
     matching_generators = []
     for generator in _thumbnail_generators:
         try:
-            if await generator.can_generate(content_type, filename):
+            if await asyncio.wait_for(
+                generator.can_generate(content_type, filename),
+                timeout=_thumbnail_settings.timeout_seconds,
+            ):
                 matching_generators.append(generator)
         except Exception:
             continue
 
     if not matching_generators:
+        await cache_failure("skipped", "unsupported")
         return None
 
-    try:
-        file_bytes = await storage.read_file(row["path"])
-    except Exception:
+    if row["size"] is None or row["size"] > _thumbnail_settings.max_source_bytes:
+        await cache_failure("skipped", "too_large")
         return None
 
-    for generator in matching_generators:
+    async with _thumbnail_semaphore:
+        # A concurrent request for this file may have populated a cache while this
+        # request was waiting for the single generation slot.
+        state, cached_result = await cache_state()
+        if state == "thumbnail":
+            return cached_result
+        if state == "failure":
+            return None
+
         try:
-            result = await generator.generate(
-                file_bytes, content_type, filename, max_width=200, max_height=200
+            file_bytes = await storage.read_file_limited(
+                row["path"], _thumbnail_settings.max_source_bytes
             )
-            if result:
-                await db.execute_write(
-                    """INSERT OR REPLACE INTO datasette_files_thumbnails
-                       (file_id, thumbnail, content_type, width, height, generator)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    [
-                        file_id,
-                        result.thumb_bytes,
-                        result.content_type,
-                        result.width,
-                        result.height,
-                        generator.name,
-                    ],
-                )
-                return result
+        except FileTooLarge:
+            await cache_failure("skipped", "too_large")
+            return None
         except Exception:
-            continue
+            await cache_failure("failed", "read_failed")
+            return None
+
+        last_reason = "generation_failed"
+        last_generator = None
+        for generator in matching_generators:
+            last_generator = generator.name
+            try:
+                result = await asyncio.wait_for(
+                    generator.generate(
+                        file_bytes,
+                        content_type,
+                        filename,
+                        max_width=200,
+                        max_height=200,
+                    ),
+                    timeout=_thumbnail_settings.timeout_seconds,
+                )
+                if result:
+                    await db.execute_write(
+                        """INSERT OR REPLACE INTO datasette_files_thumbnails
+                           (file_id, thumbnail, content_type, width, height, generator, cache_key)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            file_id,
+                            result.thumb_bytes,
+                            result.content_type,
+                            result.width,
+                            result.height,
+                            generator.name,
+                            cache_key,
+                        ],
+                    )
+                    await db.execute_write(
+                        "DELETE FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                        [file_id],
+                    )
+                    return result
+            except asyncio.TimeoutError:
+                last_reason = "timeout"
+            except ThumbnailGenerationError as ex:
+                last_reason = ex.reason
+            except Exception:
+                last_reason = "generation_failed"
+
+        status = "skipped" if last_reason in {"too_many_pixels"} else "failed"
+        await cache_failure(status, last_reason, last_generator)
 
     return None
 
@@ -2170,4 +2364,12 @@ async def homepage_actions(datasette, actor, request):
 def register_thumbnail_generators(datasette):
     from .pillow_thumbnails import PillowThumbnailGenerator
 
-    return [PillowThumbnailGenerator()]
+    config = datasette.plugin_config("datasette-files") if datasette else {}
+    settings = _thumbnail_settings_from_config(config or {})
+    return [
+        PillowThumbnailGenerator(
+            max_pixels=settings.max_pixels,
+            memory_limit_bytes=settings.memory_limit_bytes,
+            timeout_seconds=settings.timeout_seconds,
+        )
+    ]

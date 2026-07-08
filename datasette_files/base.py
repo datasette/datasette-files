@@ -5,6 +5,18 @@ from dataclasses import dataclass, field
 from typing import Optional, AsyncIterator
 
 
+class FileTooLarge(Exception):
+    """Raised when a bounded storage read exceeds its byte limit."""
+
+
+class ThumbnailGenerationError(Exception):
+    """A safe, cacheable thumbnail generation failure."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass
 class FileMetadata:
     """Metadata about a file in a storage backend."""
@@ -71,6 +83,24 @@ class Storage(ABC):
     async def read_file(self, path: str) -> bytes:
         """Return the full content of a file. Raises FileNotFoundError if missing."""
         ...
+
+    async def read_file_limited(self, path: str, max_bytes: int) -> bytes:
+        """Return content while refusing known or actual content over max_bytes.
+
+        Backends should override this with a genuinely bounded implementation. The
+        default checks metadata before calling the legacy ``read_file()`` method,
+        then verifies the returned byte count for compatibility with existing
+        storage plugins.
+        """
+        metadata = await self.get_file_metadata(path)
+        if metadata is None:
+            raise FileNotFoundError(f"File not found: {path}")
+        if metadata.size is None or metadata.size > max_bytes:
+            raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
+        content = await self.read_file(path)
+        if len(content) > max_bytes:
+            raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
+        return content
 
     # Optional methods — override based on capabilities
 
