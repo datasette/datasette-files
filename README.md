@@ -579,6 +579,12 @@ class ThumbnailResult:
 - `can_generate(content_type, filename)`: Return `True` if this generator can handle the file
 - `generate(file_bytes, content_type, filename, max_width, max_height)`: Return a `ThumbnailResult` or `None`
 
+`generate()` may also raise `ThumbnailGenerationError(reason)` to record why
+generation failed. Pass `skipped=True` when the failure is a policy decision
+(for example a file over one of your own limits) that should stay cached until
+the thumbnail policy changes; without it the failure is retried after the
+cooldown described above.
+
 ### Example: PDF thumbnail generator
 
 ```python

@@ -1552,6 +1552,7 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
             return None
 
         last_reason = "generation_failed"
+        last_skipped = False
         last_generator = None
         for generator in matching_generators:
             last_generator = generator.name
@@ -1588,13 +1589,17 @@ async def _get_or_generate_thumbnail(datasette, file_id, row):
                     return result
             except asyncio.TimeoutError:
                 last_reason = "timeout"
+                last_skipped = False
             except ThumbnailGenerationError as ex:
                 last_reason = ex.reason
+                last_skipped = ex.skipped
             except Exception:
                 last_reason = "generation_failed"
+                last_skipped = False
 
-        status = "skipped" if last_reason in {"too_many_pixels"} else "failed"
-        await cache_failure(status, last_reason, last_generator)
+        await cache_failure(
+            "skipped" if last_skipped else "failed", last_reason, last_generator
+        )
 
     return None
 

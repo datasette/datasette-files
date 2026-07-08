@@ -10,11 +10,17 @@ class FileTooLarge(Exception):
 
 
 class ThumbnailGenerationError(Exception):
-    """A safe, cacheable thumbnail generation failure."""
+    """A safe, cacheable thumbnail generation failure.
 
-    def __init__(self, reason: str):
+    Set ``skipped=True`` when the failure is a policy decision (for example an
+    image over a configured limit) that should stay cached until the policy
+    changes, rather than a fault worth retrying.
+    """
+
+    def __init__(self, reason: str, *, skipped: bool = False):
         super().__init__(reason)
         self.reason = reason
+        self.skipped = skipped
 
 
 @dataclass

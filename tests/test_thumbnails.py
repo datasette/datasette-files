@@ -823,6 +823,53 @@ async def test_cached_thumbnail_outcome_needs_a_single_cache_query(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_generator_can_mark_failure_as_policy_skip(upload_dir):
+    from datasette import hookimpl
+    from datasette.plugins import pm
+    from datasette_files.base import ThumbnailGenerationError
+
+    class SkippingPlugin:
+        __name__ = "SkippingThumbnailPlugin"
+
+        @hookimpl
+        def register_thumbnail_generators(self, datasette):
+            class SkippingGenerator:
+                name = "skipping"
+
+                async def can_generate(self, content_type, filename):
+                    return content_type == "application/x-skip"
+
+                async def generate(self, *args, **kwargs):
+                    raise ThumbnailGenerationError("wrong_colorspace", skipped=True)
+
+            return [SkippingGenerator()]
+
+    pm.register(SkippingPlugin(), name="undo_SkippingThumbnailPlugin")
+    try:
+        ds = _make_datasette(
+            upload_dir,
+            permissions={"files-browse": True, "files-upload": True},
+            plugin_options={"thumbnail_eager": False},
+        )
+        data = await _upload_file(
+            ds,
+            filename="skip.bin",
+            content=b"skip",
+            content_type="application/x-skip",
+        )
+        await ds.client.get(f"/-/files/{data['file_id']}/thumbnail")
+        row = (
+            await ds.get_internal_database().execute(
+                "SELECT status, reason FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+                [data["file_id"]],
+            )
+        ).first()
+        assert dict(row) == {"status": "skipped", "reason": "wrong_colorspace"}
+    finally:
+        pm.unregister(name="undo_SkippingThumbnailPlugin")
+
+
+@pytest.mark.asyncio
 async def test_read_file_limited_default_reads_when_size_unknown():
     from datasette_files.base import (
         FileMetadata,

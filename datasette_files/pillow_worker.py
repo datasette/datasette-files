@@ -36,7 +36,14 @@ def main() -> None:
 
         image = Image.open(io.BytesIO(file_bytes))
         if image.width * image.height > int(options["max_pixels"]):
-            _respond({"ok": False, "reason": "too_many_pixels", "pid": os.getpid()})
+            _respond(
+                {
+                    "ok": False,
+                    "reason": "too_many_pixels",
+                    "skipped": True,
+                    "pid": os.getpid(),
+                }
+            )
             return
         image = ImageOps.exif_transpose(image)
         image.thumbnail(

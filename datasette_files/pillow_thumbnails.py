@@ -56,7 +56,10 @@ def _run_worker(
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise ThumbnailGenerationError("generation_failed")
     if not response.get("ok"):
-        raise ThumbnailGenerationError(response.get("reason", "generation_failed"))
+        raise ThumbnailGenerationError(
+            response.get("reason", "generation_failed"),
+            skipped=bool(response.get("skipped")),
+        )
     return (
         ThumbnailResult(
             thumb_bytes=thumbnail,
