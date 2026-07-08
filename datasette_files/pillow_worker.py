@@ -6,7 +6,6 @@ followed by image bytes on stdin, then writes a JSON header and thumbnail bytes.
 
 import io
 import json
-import os
 import sys
 
 
@@ -36,14 +35,7 @@ def main() -> None:
 
         image = Image.open(io.BytesIO(file_bytes))
         if image.width * image.height > int(options["max_pixels"]):
-            _respond(
-                {
-                    "ok": False,
-                    "reason": "too_many_pixels",
-                    "skipped": True,
-                    "pid": os.getpid(),
-                }
-            )
+            _respond({"ok": False, "reason": "too_many_pixels", "skipped": True})
             return
         image = ImageOps.exif_transpose(image)
         image.thumbnail(
@@ -61,7 +53,6 @@ def main() -> None:
         _respond(
             {
                 "ok": True,
-                "pid": os.getpid(),
                 "content_type": output_content_type,
                 "width": image.width,
                 "height": image.height,
@@ -69,9 +60,9 @@ def main() -> None:
             output.getvalue(),
         )
     except MemoryError:
-        _respond({"ok": False, "reason": "memory_limit", "pid": os.getpid()})
+        _respond({"ok": False, "reason": "memory_limit"})
     except Exception:
-        _respond({"ok": False, "reason": "generation_failed", "pid": os.getpid()})
+        _respond({"ok": False, "reason": "generation_failed"})
 
 
 if __name__ == "__main__":

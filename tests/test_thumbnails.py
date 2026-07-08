@@ -1103,12 +1103,20 @@ async def test_cancelled_generation_kills_worker_process(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pillow_generation_runs_in_an_isolated_process():
+async def test_pillow_generation_runs_in_an_isolated_process(monkeypatch):
     from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
 
+    spawned = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spying_exec(*args, **kwargs):
+        spawned.append(args)
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spying_exec)
     generator = PillowThumbnailGenerator()
     result = await generator.generate(
         _make_test_jpeg(), "image/jpeg", "isolated.jpg"
     )
     assert result is not None
-    assert generator.last_worker_pid != os.getpid()
+    assert spawned and "datasette_files.pillow_worker" in spawned[0]

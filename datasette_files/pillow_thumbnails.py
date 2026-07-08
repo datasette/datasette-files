@@ -23,7 +23,7 @@ SUPPORTED_CONTENT_TYPES = {
 _WORKER_COMMAND = [sys.executable, "-m", "datasette_files.pillow_worker"]
 
 
-def _parse_worker_response(stdout: bytes, returncode) -> tuple[ThumbnailResult, int]:
+def _parse_worker_response(stdout: bytes, returncode) -> ThumbnailResult:
     header, separator, thumbnail = stdout.partition(b"\n")
     if returncode or not separator:
         raise ThumbnailGenerationError("generation_failed")
@@ -36,14 +36,11 @@ def _parse_worker_response(stdout: bytes, returncode) -> tuple[ThumbnailResult, 
             response.get("reason", "generation_failed"),
             skipped=bool(response.get("skipped")),
         )
-    return (
-        ThumbnailResult(
-            thumb_bytes=thumbnail,
-            content_type=response["content_type"],
-            width=response["width"],
-            height=response["height"],
-        ),
-        response["pid"],
+    return ThumbnailResult(
+        thumb_bytes=thumbnail,
+        content_type=response["content_type"],
+        width=response["width"],
+        height=response["height"],
     )
 
 
@@ -59,7 +56,6 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
     ):
         self.max_pixels = max_pixels
         self.memory_limit_bytes = memory_limit_bytes
-        self.last_worker_pid = None
 
     async def can_generate(self, content_type: str, filename: str) -> bool:
         return content_type in SUPPORTED_CONTENT_TYPES
@@ -96,6 +92,4 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
             process.kill()
             await process.wait()
             raise
-        result, worker_pid = _parse_worker_response(stdout, process.returncode)
-        self.last_worker_pid = worker_pid
-        return result
+        return _parse_worker_response(stdout, process.returncode)
