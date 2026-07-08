@@ -553,7 +553,9 @@ async def test_thumbnail_eager_generation_can_be_disabled(upload_dir):
 
 
 @pytest.mark.asyncio
-async def test_failed_generation_is_cached_and_generator_version_invalidates(upload_dir):
+async def test_failed_generation_is_cached_and_generator_version_invalidates(
+    upload_dir,
+):
     from datasette import hookimpl
     from datasette.plugins import pm
 
@@ -699,10 +701,16 @@ async def test_thumbnail_generation_is_serialized_by_default(upload_dir):
             plugin_options={"thumbnail_eager": False},
         )
         one = await _upload_file(
-            ds, filename="one.bin", content=b"1", content_type="application/x-concurrency"
+            ds,
+            filename="one.bin",
+            content=b"1",
+            content_type="application/x-concurrency",
         )
         two = await _upload_file(
-            ds, filename="two.bin", content=b"2", content_type="application/x-concurrency"
+            ds,
+            filename="two.bin",
+            content=b"2",
+            content_type="application/x-concurrency",
         )
         await asyncio.gather(
             ds.client.get(f"/-/files/{one['file_id']}/thumbnail"),
@@ -1115,8 +1123,6 @@ async def test_pillow_generation_runs_in_an_isolated_process(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spying_exec)
     generator = PillowThumbnailGenerator()
-    result = await generator.generate(
-        _make_test_jpeg(), "image/jpeg", "isolated.jpg"
-    )
+    result = await generator.generate(_make_test_jpeg(), "image/jpeg", "isolated.jpg")
     assert result is not None
     assert spawned and "datasette_files.pillow_worker" in spawned[0]

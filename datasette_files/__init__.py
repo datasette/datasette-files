@@ -187,6 +187,7 @@ def _thumbnail_cache_key(settings):
         json.dumps(policy, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
+
 # --- SVG file-type icon generation ---
 
 _FILE_ICON_STYLES = {
@@ -2029,7 +2030,9 @@ def _static_plugin_url(filename, cache_key_filenames=None):
 
 
 @hookimpl
-async def extra_js_urls(template, database, table, columns, view_name, request, datasette):
+async def extra_js_urls(
+    template, database, table, columns, view_name, request, datasette
+):
     urls = []
     if view_name in ("table", "row", "database"):
         urls.append(

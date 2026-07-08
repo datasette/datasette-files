@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, AsyncIterator
 
-
 # Thumbnail resource-safety defaults, shared by the coordinator and the
 # built-in Pillow generator so documented and enforced limits cannot drift.
 DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES = 10 * 1024 * 1024
