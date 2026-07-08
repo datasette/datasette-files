@@ -2171,16 +2171,3 @@ def register_thumbnail_generators(datasette):
     from .pillow_thumbnails import PillowThumbnailGenerator
 
     return [PillowThumbnailGenerator()]
-
-
-@hookimpl
-def skip_csrf(datasette, scope):
-    if scope["type"] != "http":
-        return False
-    path = scope["path"]
-    if path.startswith("/-/files/upload/"):
-        return True
-    # Match /-/files/{file_id}/-/delete and /-/files/{file_id}/-/update
-    if _FILE_ID_RE.match(path.split("/")[-2] if path.count("/") >= 4 else ""):
-        if path.endswith("/-/delete") or path.endswith("/-/update"):
-            return True

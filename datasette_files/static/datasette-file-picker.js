@@ -2,11 +2,6 @@
 // Modal dialog for searching and selecting files, with optional upload.
 // Dispatches "file-selected" event with detail.fileId.
 
-function _getCsrfToken() {
-  const match = document.cookie.match(/ds_csrftoken=([^;]+)/);
-  return match ? match[1] : "";
-}
-
 function _formatSize(bytes) {
   if (bytes == null) return "";
   if (bytes < 1024) return bytes + " B";
@@ -580,14 +575,11 @@ class DatasetteFilePicker extends HTMLElement {
     this._uploadBtn.disabled = true;
 
     try {
-      const csrfToken = _getCsrfToken();
-
       // Step 1: Prepare
       const prepResp = await fetch(`/-/files/upload/${source}/-/prepare`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-csrftoken": csrfToken,
         },
         body: JSON.stringify({
           filename: file.name,
@@ -622,7 +614,6 @@ class DatasetteFilePicker extends HTMLElement {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-csrftoken": csrfToken,
         },
         body: JSON.stringify({ upload_token: prepData.upload_token }),
       });
