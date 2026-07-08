@@ -86,6 +86,12 @@ async def test_filesystem_storage_configure(upload_dir):
     assert storage.capabilities.can_list is True
     assert storage.capabilities.requires_proxy_download is True
 
+    configured = FilesystemStorage()
+    await configured.configure(
+        {"root": upload_dir, "max_file_size": 1234}, get_secret=None
+    )
+    assert configured.capabilities.max_file_size == 1234
+
 
 @pytest.mark.asyncio
 async def test_filesystem_storage_receive_and_read(upload_dir):
@@ -160,6 +166,8 @@ async def test_startup_creates_tables(datasette_with_files):
     assert "datasette_files_sources" in tables
     assert "datasette_files" in tables
     assert "datasette_files_fts" in tables
+    assert "datasette_files_thumbnails" in tables
+    assert "datasette_files_thumbnail_failures" in tables
 
     # Check source was registered
     rows = (await db.execute("select * from datasette_files_sources")).rows

@@ -172,6 +172,7 @@ class ThumbnailGenerator(ABC):
     """Abstract base for thumbnail generators."""
 
     name: str
+    version: str = "1"
 
     @abstractmethod
     async def can_generate(self, content_type: str, filename: str) -> bool:
