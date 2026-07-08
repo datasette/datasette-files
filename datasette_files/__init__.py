@@ -94,6 +94,29 @@ class _ThumbnailState:
     semaphore: asyncio.Semaphore
 
 
+# In-flight eager generation tasks, referenced so they are not garbage collected
+_eager_thumbnail_tasks: set = set()
+
+
+def _schedule_eager_thumbnail(datasette, file_id, row):
+    """Generate a thumbnail in the background, without delaying the caller."""
+    task = asyncio.create_task(_get_or_generate_thumbnail(datasette, file_id, row))
+    _eager_thumbnail_tasks.add(task)
+
+    def _done(task):
+        _eager_thumbnail_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()  # Thumbnail failures are never fatal to uploads
+
+    task.add_done_callback(_done)
+
+
+async def _drain_eager_thumbnails():
+    """Wait for all in-flight eager generation to finish (used by tests)."""
+    while _eager_thumbnail_tasks:
+        await asyncio.wait(list(_eager_thumbnail_tasks))
+
+
 def _thumbnail_state(datasette) -> _ThumbnailState:
     """Return this instance's thumbnail state, creating it on first use."""
     state = getattr(datasette, "_datasette_files_thumbnail_state", None)
@@ -1100,12 +1123,10 @@ async def upload_complete(request, datasette):
     # Fetch the created record for the response
     row = await _get_file_record(datasette, file_id)
 
-    # Eager generation is optional and failure is always non-fatal to uploads.
+    # Eager generation happens in the background: the upload response must not
+    # queue behind the shared generation slot.
     if _thumbnail_state(datasette).settings.eager:
-        try:
-            await _get_or_generate_thumbnail(datasette, file_id, row)
-        except Exception:
-            pass  # Thumbnail generation remains lazy/retryable where appropriate
+        _schedule_eager_thumbnail(datasette, file_id, row)
 
     return Response.json(
         {

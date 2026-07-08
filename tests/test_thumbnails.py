@@ -337,12 +337,15 @@ async def test_thumbnail_is_cached_in_database(datasette_browse_allowed, upload_
 
 @pytest.mark.asyncio
 async def test_thumbnail_generated_on_upload(datasette_browse_allowed, upload_dir):
+    from datasette_files import _drain_eager_thumbnails
+
     ds = datasette_browse_allowed
     jpeg_bytes = _make_test_jpeg()
     data = await _upload_file(
         ds, filename="eager.jpg", content=jpeg_bytes, content_type="image/jpeg"
     )
     file_id = data["file_id"]
+    await _drain_eager_thumbnails()
 
     # Thumbnail should already be in the database (eager generation)
     db = ds.get_internal_database()
@@ -403,6 +406,9 @@ async def test_thumbnail_generated_on_upload_for_non_image_generator(upload_dir)
             content_type="application/pdf",
         )
         file_id = data["file_id"]
+        from datasette_files import _drain_eager_thumbnails
+
+        await _drain_eager_thumbnails()
 
         db = ds.get_internal_database()
         row = (
@@ -425,12 +431,15 @@ async def test_thumbnail_generated_on_upload_for_non_image_generator(upload_dir)
 
 @pytest.mark.asyncio
 async def test_thumbnail_deleted_with_file(datasette_all_permissions, upload_dir):
+    from datasette_files import _drain_eager_thumbnails
+
     ds = datasette_all_permissions
     jpeg_bytes = _make_test_jpeg(100, 100)
     data = await _upload_file(
         ds, filename="todelete.jpg", content=jpeg_bytes, content_type="image/jpeg"
     )
     file_id = data["file_id"]
+    await _drain_eager_thumbnails()
 
     # Generate thumbnail
     await ds.client.get(f"/-/files/{file_id}/thumbnail")
@@ -883,6 +892,7 @@ async def test_existing_thumbnails_survive_upgrade_migration(upload_dir):
         content_type="image/jpeg",
     )
     file_id = data["file_id"]
+    await datasette_files._drain_eager_thumbnails()
     db = ds.get_internal_database()
 
     # Simulate a database created before cache keys existed, holding a file
@@ -991,6 +1001,42 @@ async def test_thumbnail_generated_when_recorded_size_is_unknown(upload_dir):
     response = await ds.client.get(f"/-/files/{data['file_id']}/thumbnail")
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_upload_response_not_blocked_by_thumbnail_queue(upload_dir):
+    import datasette_files
+
+    ds = _make_datasette(
+        upload_dir, permissions={"files-browse": True, "files-upload": True}
+    )
+    await ds.invoke_startup()
+    state = datasette_files._thumbnail_state(ds)
+
+    # Simulate another request occupying the single generation slot
+    await state.semaphore.acquire()
+    try:
+        data = await asyncio.wait_for(
+            _upload_file(
+                ds,
+                filename="queued.jpg",
+                content=_make_test_jpeg(),
+                content_type="image/jpeg",
+            ),
+            timeout=2.0,
+        )
+    finally:
+        state.semaphore.release()
+
+    # The deferred eager generation still completes once the slot frees
+    await datasette_files._drain_eager_thumbnails()
+    row = (
+        await ds.get_internal_database().execute(
+            "SELECT file_id FROM datasette_files_thumbnails WHERE file_id = ?",
+            [data["file_id"]],
+        )
+    ).first()
+    assert row is not None
 
 
 @pytest.mark.asyncio
