@@ -904,6 +904,41 @@ async def test_existing_thumbnails_survive_upgrade_migration(upload_dir):
 
 
 @pytest.mark.asyncio
+async def test_thumbnail_settings_are_per_instance(upload_dir, tmp_path):
+    strict = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+        plugin_options={
+            "thumbnail_eager": False,
+            "thumbnail_max_source_bytes": 100,
+        },
+    )
+    data = await _upload_file(
+        strict,
+        filename="big.jpg",
+        content=_make_test_jpeg(),
+        content_type="image/jpeg",
+    )
+
+    # Starting a second instance in the same process must not affect the first
+    other = _make_datasette(
+        upload_dir,
+        permissions={"files-browse": True, "files-upload": True},
+    )
+    await other.invoke_startup()
+
+    response = await strict.client.get(f"/-/files/{data['file_id']}/thumbnail")
+    assert response.headers["content-type"] == "image/svg+xml"
+    row = (
+        await strict.get_internal_database().execute(
+            "SELECT status, reason FROM datasette_files_thumbnail_failures WHERE file_id = ?",
+            [data["file_id"]],
+        )
+    ).first()
+    assert dict(row) == {"status": "skipped", "reason": "too_large"}
+
+
+@pytest.mark.asyncio
 async def test_read_file_limited_default_reads_when_size_unknown():
     from datasette_files.base import (
         FileMetadata,
