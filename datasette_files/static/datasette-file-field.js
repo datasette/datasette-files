@@ -203,11 +203,13 @@ function renderFileField(field) {
   actions.appendChild(removeButton);
   updateButtons();
 
-  field.root.appendChild(input);
-  field.root.appendChild(wrap);
+  const fragment = document.createDocumentFragment();
+  fragment.appendChild(input);
+  fragment.appendChild(wrap);
   wrap.appendChild(current);
   wrap.appendChild(actions);
   wrap.appendChild(pickerWrap);
+  return fragment;
 }
 
 document.addEventListener("datasette_init", function (event) {
@@ -216,7 +218,7 @@ document.addEventListener("datasette_init", function (event) {
 
     makeColumnField(context) {
       if (!context.columnType || context.columnType.type !== "file") {
-        return null;
+        return;
       }
       return {
         render: renderFileField,
