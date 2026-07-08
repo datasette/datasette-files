@@ -1,8 +1,9 @@
+import dataclasses
 import hashlib
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from .base import FileMetadata, Storage, StorageCapabilities
+from .base import FileMetadata, FileTooLarge, Storage, StorageCapabilities
 
 
 class FilesystemStorage(Storage):
@@ -19,7 +20,10 @@ class FilesystemStorage(Storage):
 
     async def configure(self, config: dict, get_secret) -> None:
         self.root = Path(config["root"]).resolve()
-        self.max_file_size = config.get("max_file_size")
+        self.capabilities = dataclasses.replace(
+            FilesystemStorage.capabilities,
+            max_file_size=config.get("max_file_size"),
+        )
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _safe_path(self, path: str) -> Path:
@@ -44,6 +48,18 @@ class FilesystemStorage(Storage):
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path}")
         return target.read_bytes()
+
+    async def read_file_limited(self, path: str, max_bytes: int) -> bytes:
+        target = self._safe_path(path)
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        if target.stat().st_size > max_bytes:
+            raise FileTooLarge.for_limit(max_bytes)
+        with open(target, "rb") as fileobj:
+            content = fileobj.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise FileTooLarge.for_limit(max_bytes)
+        return content
 
     async def stream_file(self, path: str) -> AsyncIterator[bytes]:
         target = self._safe_path(path)

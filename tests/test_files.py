@@ -1,11 +1,10 @@
 from datasette.app import Datasette
 import pytest
 import json
-import tempfile
 import os
 import sqlite3
 
-from conftest import _upload_file, _make_datasette
+from conftest import _upload_file, _make_datasette, _wait_for_import
 
 
 async def _bytes_stream(data: bytes):
@@ -26,7 +25,7 @@ async def test_plugin_is_installed():
     datasette = Datasette(memory=True)
     response = await datasette.client.get("/-/plugins.json")
     assert response.status_code == 200
-    installed_plugins = {p["name"] for p in response.json()}
+    installed_plugins = {p["name"] for p in response.json()["plugins"]}
     assert "datasette-files" in installed_plugins
 
 
@@ -86,6 +85,85 @@ async def test_filesystem_storage_configure(upload_dir):
     assert storage.capabilities.can_upload is True
     assert storage.capabilities.can_list is True
     assert storage.capabilities.requires_proxy_download is True
+
+    configured = FilesystemStorage()
+    await configured.configure(
+        {"root": upload_dir, "max_file_size": 1234}, get_secret=None
+    )
+    assert configured.capabilities.max_file_size == 1234
+    # Only max_file_size may differ from the class-level capabilities
+    import dataclasses
+
+    for field in dataclasses.fields(configured.capabilities):
+        if field.name == "max_file_size":
+            continue
+        assert getattr(configured.capabilities, field.name) == getattr(
+            FilesystemStorage.capabilities, field.name
+        )
+
+
+@pytest.mark.asyncio
+async def test_ensure_column_adds_missing_column_once(datasette_with_files):
+    from datasette_files import _ensure_column
+
+    ds = datasette_with_files
+    await ds.invoke_startup()
+    db = ds.get_internal_database()
+    await db.execute_write("CREATE TABLE migration_demo (id INTEGER PRIMARY KEY)")
+
+    await _ensure_column(db, "migration_demo", "extra", "TEXT DEFAULT ''")
+    # Idempotent: a second call must not raise
+    await _ensure_column(db, "migration_demo", "extra", "TEXT DEFAULT ''")
+
+    columns = {
+        row["name"]
+        for row in (await db.execute("PRAGMA table_info(migration_demo)")).rows
+    }
+    assert columns == {"id", "extra"}
+
+
+@pytest.mark.asyncio
+async def test_configured_max_file_size_rejects_oversized_upload(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-upload": True},
+        extra_sources={
+            "test-uploads": {
+                "storage": "filesystem",
+                "config": {"root": upload_dir, "max_file_size": 100},
+            }
+        },
+    )
+    content = b"x" * 200
+    prepare = await ds.client.post(
+        "/-/files/upload/test-uploads/-/prepare",
+        content=json.dumps(
+            {
+                "filename": "big.bin",
+                "content_type": "application/octet-stream",
+                "size": len(content),
+            }
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    assert prepare.status_code == 200
+    token = prepare.json()["upload_token"]
+
+    upload = await ds.client.post(
+        "/-/files/upload/test-uploads/-/upload",
+        content=(
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="upload_token"\r\n'
+            b"\r\n" + token.encode() + b"\r\n"
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="big.bin"\r\n'
+            b"Content-Type: application/octet-stream\r\n"
+            b"\r\n" + content + b"\r\n"
+            b"--boundary--\r\n"
+        ),
+        headers={"Content-Type": "multipart/form-data; boundary=boundary"},
+    )
+    assert upload.status_code != 200
 
 
 @pytest.mark.asyncio
@@ -161,6 +239,8 @@ async def test_startup_creates_tables(datasette_with_files):
     assert "datasette_files_sources" in tables
     assert "datasette_files" in tables
     assert "datasette_files_fts" in tables
+    assert "datasette_files_thumbnails" in tables
+    assert "datasette_files_thumbnail_failures" in tables
 
     # Check source was registered
     rows = (await db.execute("select * from datasette_files_sources")).rows
@@ -684,6 +764,36 @@ async def test_search_html_no_pagination_when_few_results(datasette_browse_allow
     assert "Next" not in html
 
 
+@pytest.mark.asyncio
+async def test_search_json_exact_file_id(datasette_browse_allowed, upload_dir):
+    """Searching for an exact file ID finds that file."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="image-with-boring-name.jpg", content=b"jpg")
+    file_id = data["file_id"]
+
+    response = await ds.client.get(f"/-/files/search.json?q={file_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert [file["id"] for file in data["files"]] == [file_id]
+    assert data["files"][0]["filename"] == "image-with-boring-name.jpg"
+
+
+@pytest.mark.asyncio
+async def test_search_json_exact_file_id_respects_source_filter(
+    datasette_browse_allowed, upload_dir
+):
+    """Searching for an exact file ID still respects source=."""
+    ds = datasette_browse_allowed
+    data = await _upload_file(ds, filename="source-filtered-id.jpg", content=b"jpg")
+    file_id = data["file_id"]
+
+    response = await ds.client.get(
+        f"/-/files/search.json?q={file_id}&source=nonexistent"
+    )
+    assert response.status_code == 200
+    assert response.json()["files"] == []
+
+
 # --- Homepage action ---
 
 
@@ -726,11 +836,10 @@ async def test_files_index_page(datasette_browse_allowed, upload_dir):
 
 @pytest.mark.asyncio
 async def test_files_index_no_permission(datasette_with_files):
-    """/-/files shows no sources when actor lacks files-browse permission."""
+    """/-/files returns 403 when actor lacks files-browse permission."""
     ds = datasette_with_files
     response = await ds.client.get("/-/files")
-    assert response.status_code == 200
-    assert "No sources available" in response.text
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -1192,12 +1301,12 @@ async def test_files_edit_action_registered(datasette_with_files):
     assert "files-edit" in ds.actions
 
 
-# --- render_cell with data-column ---
+# --- render_cell ---
 
 
 @pytest.mark.asyncio
-async def test_render_cell_includes_data_column(datasette_browse_allowed, upload_dir):
-    """FileColumnType.render_cell includes data-column when table context is present."""
+async def test_render_cell_outputs_datasette_file(datasette_browse_allowed, upload_dir):
+    """FileColumnType.render_cell outputs the display web component."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
@@ -1213,15 +1322,16 @@ async def test_render_cell_includes_data_column(datasette_browse_allowed, upload
         request=None,
     )
     assert result is not None
-    assert f'data-column="document"' in result
     assert f'file-id="{file_id}"' in result
+    assert f'<a href="/-/files/{file_id}">{file_id}</a>' in result
+    assert "data-column" not in result
 
 
 @pytest.mark.asyncio
 async def test_render_cell_no_data_column_without_table(
     datasette_browse_allowed, upload_dir
 ):
-    """FileColumnType.render_cell omits data-column when table is None."""
+    """FileColumnType.render_cell does not add editing metadata."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
@@ -1259,8 +1369,10 @@ async def test_render_cell_no_match_for_non_file_id(datasette_browse_allowed):
 
 
 @pytest.mark.asyncio
-async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_dir):
-    """FileColumnType.render_cell escapes column names to prevent XSS."""
+async def test_render_cell_does_not_include_column_name(
+    datasette_browse_allowed, upload_dir
+):
+    """FileColumnType.render_cell no longer embeds column names."""
     ds = datasette_browse_allowed
     data = await _upload_file(ds, filename="cell.txt", content=b"cell test")
     file_id = data["file_id"]
@@ -1277,7 +1389,7 @@ async def test_render_cell_escapes_column_name(datasette_browse_allowed, upload_
     )
     assert result is not None
     assert "<script>" not in result
-    assert "&lt;script&gt;" in result or "&#" in result
+    assert "data-column" not in result
 
 
 @pytest.mark.asyncio
@@ -1333,52 +1445,12 @@ async def test_table_page_only_renders_file_typed_columns(tmp_path):
     assert f">{file_id}</td>" in response.text
 
 
-# --- extra_body_script ---
+# --- extra_js_urls ---
 
 
 @pytest.mark.asyncio
-async def test_extra_body_script_on_table_page(tmp_path):
-    """extra_body_script emits window.__datasette_files on table pages."""
-    upload_dir = str(tmp_path / "uploads")
-    os.makedirs(upload_dir)
-
-    ds = Datasette(
-        [str(tmp_path / "test.db")],
-        config={
-            "plugins": {
-                "datasette-files": {
-                    "sources": {
-                        "test-src": {
-                            "storage": "filesystem",
-                            "config": {"root": upload_dir},
-                        }
-                    }
-                }
-            },
-            "permissions": {
-                "files-browse": True,
-            },
-        },
-    )
-    db = ds.get_database("test")
-    await db.execute_write(
-        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
-    )
-
-    # Visit the table page as anonymous user
-    response = await ds.client.get("/test/projects")
-    assert response.status_code == 200
-    assert "window.__datasette_files" in response.text
-    # Anonymous user cannot update rows by default
-    assert '"canUpdate": false' in response.text
-    assert '"database": "test"' in response.text
-    assert '"fileColumns": []' in response.text
-    assert '"table": "projects"' in response.text
-
-
-@pytest.mark.asyncio
-async def test_extra_body_script_includes_file_columns(tmp_path):
-    """extra_body_script includes typed file columns for table-page enhancement."""
+async def test_table_page_loads_file_field_for_file_columns(tmp_path):
+    """Table pages with file columns load the modal field plugin."""
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
 
@@ -1418,12 +1490,14 @@ async def test_extra_body_script_includes_file_columns(tmp_path):
 
     response = await ds.client.get("/test/projects")
     assert response.status_code == 200
-    assert '"fileColumns": ["logo"]' in response.text
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" in response.text
+    assert "window.__datasette_files" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_extra_body_script_with_update_permission(tmp_path):
-    """extra_body_script sets canUpdate true when actor has update-row permission."""
+async def test_table_page_skips_file_field_without_file_columns(tmp_path):
+    """Tables without file column types do not load the modal field plugin."""
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
 
@@ -1442,23 +1516,71 @@ async def test_extra_body_script_with_update_permission(tmp_path):
             },
             "permissions": {
                 "files-browse": True,
-                "update-row": True,
             },
         },
     )
     db = ds.get_database("test")
     await db.execute_write(
-        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT)"
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
     )
 
     response = await ds.client.get("/test/projects")
     assert response.status_code == 200
-    assert '"canUpdate": true' in response.text
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" not in response.text
+    assert "window.__datasette_files" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_extra_body_script_not_on_non_table_pages(tmp_path):
-    """extra_body_script does not emit on non-table pages like database index."""
+async def test_row_page_does_not_load_file_field(tmp_path):
+    """The modal field plugin is only needed on table pages."""
+    upload_dir = str(tmp_path / "uploads")
+    os.makedirs(upload_dir)
+
+    ds = Datasette(
+        [str(tmp_path / "test.db")],
+        config={
+            "plugins": {
+                "datasette-files": {
+                    "sources": {
+                        "test-src": {
+                            "storage": "filesystem",
+                            "config": {"root": upload_dir},
+                        }
+                    }
+                }
+            },
+            "permissions": {
+                "files-browse": True,
+            },
+            "databases": {
+                "test": {
+                    "tables": {
+                        "projects": {
+                            "column_types": {
+                                "logo": "file",
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    )
+    db = ds.get_database("test")
+    await db.execute_write(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, logo TEXT)"
+    )
+    await db.execute_write("INSERT INTO projects (id, name) VALUES (1, 'One')")
+
+    response = await ds.client.get("/test/projects/1")
+    assert response.status_code == 200
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_extra_body_script_removed_from_database_page(tmp_path):
+    """The old window.__datasette_files page global is no longer emitted."""
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
 
@@ -1483,6 +1605,8 @@ async def test_extra_body_script_not_on_non_table_pages(tmp_path):
     # Database page
     response = await ds.client.get("/test")
     assert response.status_code == 200
+    assert "datasette-file-cell.js" in response.text
+    assert "datasette-file-field.js" not in response.text
     assert "window.__datasette_files" not in response.text
 
 
@@ -1787,8 +1911,9 @@ async def test_import_preview_get_404_for_missing_file(upload_dir):
 
 
 @pytest.mark.asyncio
-async def test_import_post_requires_csrf_token(upload_dir):
-    """POST /-/files/import/{file_id} without a CSRF token should return 403."""
+async def test_import_post_blocks_cross_site_requests(upload_dir):
+    """Cross-site POST to /-/files/import/{file_id} is rejected by Datasette's
+    cross-origin protection; same-origin POST goes through."""
     ds = _make_datasette(
         upload_dir,
         permissions={"files-browse": True, "files-upload": True},
@@ -1801,20 +1926,21 @@ async def test_import_post_requires_csrf_token(upload_dir):
     )
     file_id = result["file_id"]
 
-    # GET the page first to obtain the CSRF cookie
-    get_response = await ds.client.get(f"/-/files/import/{file_id}")
-    assert get_response.status_code == 200
-    csrf_cookie = get_response.cookies.get("ds_csrftoken")
-    assert csrf_cookie, "Expected ds_csrftoken cookie from GET"
-
-    # POST with the cookie but without the csrftoken form field
     response = await ds.client.post(
         f"/-/files/import/{file_id}",
         data={"table_name": "data", "database_name": "data"},
-        cookies={"ds_csrftoken": csrf_cookie},
+        headers={"sec-fetch-site": "cross-site"},
         follow_redirects=False,
     )
     assert response.status_code == 403
+
+    response = await ds.client.post(
+        f"/-/files/import/{file_id}",
+        data={"table_name": "data", "database_name": "data"},
+        headers={"sec-fetch-site": "same-origin"},
+        follow_redirects=False,
+    )
+    assert response.status_code != 403
 
 
 @pytest.mark.asyncio
@@ -1898,7 +2024,6 @@ async def test_import_permission_checks(
 @pytest.mark.asyncio
 async def test_import_post_creates_job_and_imports(tmp_path):
     """POST /-/files/import/{file_id} creates import job, imports CSV, and redirects to progress page."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -1907,6 +2032,7 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -1947,14 +2073,9 @@ async def test_import_post_creates_job_and_imports(tmp_path):
     location = response.headers["location"]
     assert "/-/files/import/" in location
 
-    # Give the async task time to complete
-    await asyncio.sleep(0.5)
+    job = await _wait_for_import(ds)
 
     # Verify import job was created in internal DB
-    internal_db = ds.get_internal_database()
-    jobs = (await internal_db.execute("SELECT * FROM _datasette_files_imports")).rows
-    assert len(jobs) == 1
-    job = dict(jobs[0])
     assert job["file_id"] == file_id
     assert job["import_type"] == "csv"
     assert job["database_name"] == "data"
@@ -1980,7 +2101,6 @@ async def test_import_post_creates_job_and_imports(tmp_path):
 @pytest.mark.asyncio
 async def test_import_csv_with_empty_rows(tmp_path):
     """CSV import handles files with empty rows (blank lines) without division by zero."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -1989,6 +2109,7 @@ async def test_import_csv_with_empty_rows(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -2025,11 +2146,7 @@ async def test_import_csv_with_empty_rows(tmp_path):
     )
     assert response.status_code in (301, 302, 303)
 
-    await asyncio.sleep(0.5)
-
-    internal_db = ds.get_internal_database()
-    jobs = (await internal_db.execute("SELECT * FROM _datasette_files_imports")).rows
-    job = dict(jobs[0])
+    job = await _wait_for_import(ds)
     assert job["status"] == "finished"
     assert job["row_count"] == 3
 
@@ -2043,7 +2160,6 @@ async def test_import_csv_with_empty_rows(tmp_path):
 @pytest.mark.asyncio
 async def test_import_progress_json(tmp_path):
     """GET /-/files/import/{file_id}/{import_id}.json returns progress data."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -2052,6 +2168,7 @@ async def test_import_progress_json(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -2088,10 +2205,7 @@ async def test_import_progress_json(tmp_path):
         follow_redirects=False,
     )
     location = response.headers["location"]
-    # Extract import_id from redirect URL
-    import_id = location.split("/")[-1]
-
-    await asyncio.sleep(0.5)
+    await _wait_for_import(ds)
 
     # Fetch progress JSON
     response = await ds.client.get(f"{location}.json")
@@ -2107,7 +2221,6 @@ async def test_import_progress_json(tmp_path):
 @pytest.mark.asyncio
 async def test_import_progress_page(tmp_path):
     """GET /-/files/import/{file_id}/{import_id} returns an HTML progress page with progress bar."""
-    import asyncio
 
     upload_dir = str(tmp_path / "uploads")
     os.makedirs(upload_dir)
@@ -2116,6 +2229,7 @@ async def test_import_progress_page(tmp_path):
 
     ds = Datasette(
         [db_path],
+        internal=str(tmp_path / "internal.db"),
         config={
             "plugins": {
                 "datasette-files": {
@@ -2152,7 +2266,7 @@ async def test_import_progress_page(tmp_path):
     )
     location = response.headers["location"]
 
-    await asyncio.sleep(0.5)
+    await _wait_for_import(ds)
 
     # Fetch progress HTML page
     response = await ds.client.get(location)

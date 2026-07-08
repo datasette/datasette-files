@@ -56,14 +56,16 @@ plugins:
 
 All access is **denied by default**. You must explicitly grant permissions in the `permissions:` block of your `datasette.yaml`.
 
-There are four permission actions, each scoped to a source:
+There are four permission actions:
 
-| Action | Description |
-|--------|-------------|
-| `files-browse` | Browse, search, view, and download files |
-| `files-upload` | Upload files to a source |
-| `files-edit` | Edit file metadata (e.g. search text) |
-| `files-delete` | Delete files from a source |
+| Action | Description | Scoped to |
+|--------|-------------|-----------|
+| `files-browse` | Browse, search, view, and download files | Source |
+| `files-upload` | Upload files to a source | Source |
+| `files-edit` | Edit file metadata (e.g. search text) | File |
+| `files-delete` | Delete files from a source | File |
+
+`files-browse` and `files-upload` are scoped to a source — granting them allows the action on all files in that source. `files-edit` and `files-delete` are scoped to individual files, but a source-level grant cascades to all files within it.
 
 CSV/TSV import also requires Datasette's built-in `create-table` and `insert-row` permissions on the target database. See [Built-in CSV import action](#built-in-csv-import-action) for details.
 
@@ -100,6 +102,26 @@ permissions:
       allow:
         id: alice
 ```
+
+#### Owner permissions
+
+By default, anyone with `files-edit` or `files-delete` permission on a source can edit or delete any file in that source. You can restrict edit and delete so that users can only act on files they uploaded themselves:
+
+```yaml
+plugins:
+  datasette-files:
+    owners_can_edit: true
+    owners_can_delete: true
+    sources:
+      my-files:
+        storage: filesystem
+        config:
+          root: /data/uploads
+```
+
+With these settings, the uploader of each file gains edit or delete permission on their own files — without needing a source-level `files-edit` or `files-delete` grant. Actors who *do* have a source-level grant (e.g. admins) can still act on any file in that source.
+
+Files uploaded without an authenticated actor have no owner, so they can only be managed by actors with source-level grants.
 
 ### Uploading files
 
@@ -181,7 +203,7 @@ curl -X POST "http://localhost:8001/-/files/df-01j5.../-/delete" \
   -d '{}'
 ```
 
-Requires `files-delete` permission on the file's source.
+Requires `files-delete` permission on the file (or a source-level `files-delete` grant).
 
 Deletion also depends on the storage backend supporting `can_delete`.
 
@@ -193,7 +215,7 @@ curl -X POST "http://localhost:8001/-/files/df-01j5.../-/update" \
   -d '{"update": {"search_text": "Annual report 2025"}}'
 ```
 
-Requires `files-edit` permission on the file's source. Only `search_text` can be updated through this endpoint for now, and the response returns the updated file record.
+Requires `files-edit` permission on the file (or a source-level `files-edit` grant). Only `search_text` can be updated through this endpoint for now, and the response returns the updated file record.
 
 ### Viewing files
 
@@ -276,6 +298,83 @@ Once a column is assigned the `file` type, store a `df-...` ID returned from the
 | `POST` | `/-/files/import/{file_id}` | Start CSV import job |
 | `GET` | `/-/files/import/{file_id}/{import_id}` | Import progress page (HTML) |
 | `GET` | `/-/files/import/{file_id}/{import_id}.json` | Import progress (JSON) |
+
+## Python API
+
+Other Datasette plugins can use the `get_file()` function to access files managed by datasette-files.
+
+### `get_file(datasette, file_id)`
+
+Look up a file by its ID and return a `File` object, or `None` if the file was not found.
+
+```python
+from datasette_files import get_file
+
+file = await get_file(datasette, "df-01j5a3b4c5d6e7f8g9h0jkmnpq")
+if file is None:
+    # File not found
+    ...
+```
+
+The `File` object has the following attributes:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `id` | `str` | The file ID |
+| `filename` | `str` | Original filename |
+| `content_type` | `str` | MIME type |
+| `size` | `int` | File size in bytes |
+| `source_slug` | `str` | The source this file belongs to |
+| `uploaded_by` | `str` or `None` | Actor ID of the uploader |
+| `created_at` | `datetime` | UTC timezone-aware datetime of upload |
+| `metadata` | `dict` | Arbitrary metadata dict |
+
+### `file.read(max_bytes=None)`
+
+Read file content as bytes. Pass `max_bytes` to limit how much is read — useful to avoid loading very large files into memory.
+
+```python
+# Read the entire file
+content = await file.read()
+
+# Read at most 1MB
+content = await file.read(max_bytes=1_000_000)
+```
+
+### `file.open()`
+
+Open the file for streaming reads. Returns an async context manager that yields an async iterator of bytes chunks. Use this for large files where you want to avoid loading the entire content into memory.
+
+```python
+async with file.open() as stream:
+    async for chunk in stream:
+        process(chunk)
+```
+
+### Example: using `get_file()` from another plugin
+
+```python
+from datasette_files import get_file
+
+async def my_view(datasette, request):
+    file = await get_file(datasette, request.args["file_id"])
+    if file is None:
+        raise NotFound("File not found")
+
+    if file.content_type.startswith("image/"):
+        image_bytes = await file.read(max_bytes=20_000_000)
+        # Process image...
+    elif file.size and file.size > 10_000_000:
+        # Stream large files
+        async with file.open() as stream:
+            async for chunk in stream:
+                ...
+    else:
+        content = await file.read()
+        text = content.decode("utf-8")
+```
+
+Note: `get_file()` does not perform any permission checks — the calling plugin is responsible for its own authorization.
 
 ## Plugin hook: `file_actions`
 
@@ -385,6 +484,63 @@ When `/-/files/{file_id}/thumbnail` is requested, datasette-files will:
 
 The same generation path is also attempted eagerly after uploads complete, so generators can populate the cache before the first thumbnail request.
 
+### Thumbnail resource safety
+
+Thumbnail work has limits separate from the upload size limit. The defaults are
+designed to be safe on small instances, including machines with 256 MB of RAM:
+
+```yaml
+plugins:
+  datasette-files:
+    thumbnail_max_source_bytes: 10485760       # 10 MB
+    thumbnail_max_pixels: 12000000             # 12 megapixels
+    thumbnail_concurrency: 1
+    thumbnail_timeout_seconds: 10
+    thumbnail_process_memory_limit_bytes: 134217728  # 128 MB
+    thumbnail_eager: true
+    sources:
+      my-files:
+        storage: filesystem
+        config:
+          root: /data/uploads
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `thumbnail_max_source_bytes` | 10 MB | Skip generation before reading a larger source file |
+| `thumbnail_max_pixels` | 12,000,000 | Built-in generator only: reject raster images whose decoded width × height is larger |
+| `thumbnail_concurrency` | 1 | Maximum number of files being read and rendered concurrently |
+| `thumbnail_timeout_seconds` | 10 | Per-generator timeout, including the built-in worker |
+| `thumbnail_process_memory_limit_bytes` | 128 MB | Built-in generator only: address-space limit for the Pillow subprocess on Linux |
+| `thumbnail_eager` | `true` | Generate after upload; set to `false` to wait for the first request |
+
+The byte limit, concurrency limit and timeout apply to every generator. The
+pixel limit, process isolation and memory limit are properties of the built-in
+Pillow generator: it always runs in a separate process, and on Linux that
+process also receives the configured operating-system memory limit (other
+platforms still get process isolation but not the address-space limit).
+
+Third-party thumbnail generators run in the Datasette process and receive the
+full file bytes; the pixel and memory settings above do not constrain them.
+Generator plugins that decode untrusted formats should implement their own
+equivalent safeguards, such as subprocess isolation and decompression-bomb
+checks.
+
+Files that exceed a limit, time out, or fail generation receive the normal SVG
+file-type icon. The outcome is cached so repeated page views do not repeat unsafe
+or expensive work. Successful and failed entries share a policy cache key; changing
+resource settings or a generator version invalidates them automatically.
+
+Policy decisions (file too large, unsupported type, over the pixel limit) stay
+cached until the policy changes. Failures that may be transient — storage read
+errors, generator crashes, and timeouts — are retried automatically after a
+five-minute cooldown.
+
+The byte limit is checked against recorded metadata and enforced by a bounded
+storage read. The built-in filesystem backend implements a genuinely bounded
+read. Third-party storage backends should override `read_file_limited()` to get
+the same guarantee when their metadata cannot be trusted.
+
 ### The `ThumbnailGenerator` base class
 
 Import the base class and result dataclass from `datasette_files.base`:
@@ -398,6 +554,7 @@ Implement these methods:
 ```python
 class ThumbnailGenerator(ABC):
     name: str
+    version: str = "1"
 
     async def can_generate(self, content_type: str, filename: str) -> bool:
         ...
@@ -425,8 +582,15 @@ class ThumbnailResult:
 ```
 
 - `name`: Short identifier stored alongside generated thumbnails in the cache table
+- `version`: Cache version for the generator. Increment this when output logic changes
 - `can_generate(content_type, filename)`: Return `True` if this generator can handle the file
 - `generate(file_bytes, content_type, filename, max_width, max_height)`: Return a `ThumbnailResult` or `None`
+
+`generate()` may also raise `ThumbnailGenerationError(reason)` to record why
+generation failed. Pass `skipped=True` when the failure is a policy decision
+(for example a file over one of your own limits) that should stay cached until
+the thumbnail policy changes; without it the failure is retried after the
+cooldown described above.
 
 ### Example: PDF thumbnail generator
 
@@ -553,6 +717,22 @@ async def get_file_metadata(self, path: str) -> Optional[FileMetadata]:
 async def read_file(self, path: str) -> bytes:
     # Read and return the file content
     ...
+```
+
+**`read_file_limited(path, max_bytes)`** — Return content only if it fits within
+`max_bytes`, raising `FileTooLarge` otherwise. Thumbnail generation uses this
+method. The compatibility implementation checks metadata before `read_file()`,
+but backends should override it with a bounded range or streaming read so incorrect
+metadata can never cause an unbounded allocation.
+
+```python
+from datasette_files.base import FileTooLarge
+
+async def read_file_limited(self, path: str, max_bytes: int) -> bytes:
+    content = await self.read_at_most(path, max_bytes + 1)
+    if len(content) > max_bytes:
+        raise FileTooLarge()
+    return content
 ```
 
 #### Optional methods
@@ -747,6 +927,10 @@ The built-in `FilesystemStorage` stores files on the local filesystem. It suppor
 |-----|----------|-------------|
 | `root` | Yes | Absolute path to the directory where files are stored |
 | `max_file_size` | No | Maximum upload size in bytes (defaults to 100 MB) |
+
+Note: earlier releases silently ignored a configured `max_file_size` and always
+applied the 100 MB default. The option is now enforced — uploads larger than a
+configured limit are rejected.
 
 **Capabilities:**
 

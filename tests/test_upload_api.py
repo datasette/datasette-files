@@ -1,11 +1,10 @@
 """Tests for the unified prepare/upload/complete upload API and upload UI."""
 
-from datasette.app import Datasette
 import pytest
 import json
 import os
 
-from conftest import _upload_file, _make_datasette
+from conftest import _upload_file
 
 # --- Upload page UI ---
 

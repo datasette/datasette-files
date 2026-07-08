@@ -37,7 +37,7 @@ async def get_upload_details(request: Request):
     """
     try:
         data = await request.json()
-    except Exception as e:
+    except Exception:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     filename = data.get("filename")
