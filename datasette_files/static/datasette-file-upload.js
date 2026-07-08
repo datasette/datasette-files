@@ -53,11 +53,6 @@ function _formatSize(bytes) {
   return (mb / 1024).toFixed(1) + ' GB';
 }
 
-function _getCsrfToken() {
-  const match = document.cookie.match(/ds_csrftoken=([^;]+)/);
-  return match ? match[1] : '';
-}
-
 function _setXhrHeaders(xhr, headers) {
   for (const [key, value] of Object.entries(headers || {})) {
     xhr.setRequestHeader(key, value);
@@ -347,7 +342,6 @@ class DatasetteFileUpload extends HTMLElement {
 
   async _uploadAll() {
     this._uploading = true;
-    const csrfToken = _getCsrfToken();
     const pending = this._files.filter(f => f.status === 'pending');
     this._renderFileList();
 
@@ -365,7 +359,6 @@ class DatasetteFileUpload extends HTMLElement {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-csrftoken': csrfToken,
           },
           body: JSON.stringify({
             filename: entry.file.name,
@@ -420,7 +413,6 @@ class DatasetteFileUpload extends HTMLElement {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-csrftoken': csrfToken,
           },
           body: JSON.stringify({ upload_token: prepData.upload_token }),
         });

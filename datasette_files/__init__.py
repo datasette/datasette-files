@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+from pathlib import Path
 import re
 import sqlite_utils
 import string
@@ -1559,6 +1560,27 @@ async def search_files(request, datasette):
 
     if not allowed_slugs:
         files = []
+    elif q and _FILE_ID_RE.match(q):
+        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        search_sql = """
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   f.created_at, f.uploaded_by, s.slug as source_slug
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE f.id = :file_id
+            AND s.slug IN ({placeholders})
+            {source_where}
+            LIMIT 1
+        """.format(
+            placeholders=placeholders,
+            source_where="AND s.slug = :source_filter" if source_filter else "",
+        )
+        params = {"file_id": q}
+        for i, slug in enumerate(allowed_slugs):
+            params[f"_slug_{i}"] = slug
+        if source_filter:
+            params["source_filter"] = source_filter
+        files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
     elif q:
         # Build prefix query: append * to each term for prefix matching, OR between terms
         terms = ['"{}"*'.format(term.replace('"', '""')) for term in q.split() if term]
@@ -1741,58 +1763,53 @@ def register_routes():
 def _render_file_cell(datasette, value, column, table):
     if not isinstance(value, str) or not _FILE_ID_RE.match(value):
         return None
-    col_attr = (
-        ' data-column="{}"'.format(Markup.escape(column)) if table is not None else ""
-    )
     url = datasette.urls.path(f"/-/files/{value}")
     return Markup(
-        '<datasette-file file-id="{v}"{col}>'
+        '<datasette-file file-id="{v}">'
         '<a href="{url}">{v}</a>'
-        "</datasette-file>".format(v=value, col=col_attr, url=url)
+        "</datasette-file>".format(v=value, url=url)
     )
 
 
+def _static_plugin_url(filename, cache_key_filenames=None):
+    static_dir = Path(__file__).parent / "static"
+    cache_key_filenames = cache_key_filenames or [filename]
+    cache_key = max(
+        (static_dir / cache_key_filename).stat().st_mtime_ns
+        for cache_key_filename in cache_key_filenames
+    )
+    return f"/-/static-plugins/datasette_files/{filename}?{cache_key}"
+
+
 @hookimpl
-def extra_js_urls(template, database, table, columns, view_name, request, datasette):
+async def extra_js_urls(template, database, table, columns, view_name, request, datasette):
+    urls = []
     if view_name in ("table", "row", "database"):
-        return [
+        urls.append(
             {
-                "url": "/-/static-plugins/datasette_files/datasette-file-cell.js",
+                "url": _static_plugin_url("datasette-file-cell.js"),
                 "module": True,
             }
-        ]
-    return []
-
-
-@hookimpl
-async def extra_body_script(
-    template, database, table, columns, view_name, request, datasette
-):
-    if view_name not in ("table", "row") or table is None:
-        return ""
-    from datasette.resources import TableResource
-
-    can_update = await datasette.allowed(
-        action="update-row",
-        resource=TableResource(database=database, table=table),
-        actor=request.actor,
-    )
-    column_types = await datasette.get_column_types(database, table)
-    file_columns = [
-        column_name
-        for column_name, column_type in column_types.items()
-        if column_type.name == FileColumnType.name
-    ]
-    return "window.__datasette_files = {};".format(
-        json.dumps(
-            {
-                "canUpdate": can_update,
-                "database": database,
-                "fileColumns": file_columns,
-                "table": table,
-            }
         )
-    )
+    if view_name == "table" and database and table:
+        column_types = await datasette.get_column_types(database, table)
+        if any(
+            column_type.name == FileColumnType.name
+            for column_type in column_types.values()
+        ):
+            urls.append(
+                {
+                    "url": _static_plugin_url(
+                        "datasette-file-field.js",
+                        [
+                            "datasette-file-field.js",
+                            "datasette-file-picker.js",
+                        ],
+                    ),
+                    "module": True,
+                }
+            )
+    return urls
 
 
 def _parse_csv_preview(content_bytes, max_rows=10):
@@ -2154,16 +2171,3 @@ def register_thumbnail_generators(datasette):
     from .pillow_thumbnails import PillowThumbnailGenerator
 
     return [PillowThumbnailGenerator()]
-
-
-@hookimpl
-def skip_csrf(datasette, scope):
-    if scope["type"] != "http":
-        return False
-    path = scope["path"]
-    if path.startswith("/-/files/upload/"):
-        return True
-    # Match /-/files/{file_id}/-/delete and /-/files/{file_id}/-/update
-    if _FILE_ID_RE.match(path.split("/")[-2] if path.count("/") >= 4 else ""):
-        if path.endswith("/-/delete") or path.endswith("/-/update"):
-            return True
