@@ -4,6 +4,36 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, AsyncIterator
 
+# Thumbnail resource-safety defaults, shared by the coordinator and the
+# built-in Pillow generator so documented and enforced limits cannot drift.
+DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES = 10 * 1024 * 1024
+DEFAULT_THUMBNAIL_MAX_PIXELS = 12_000_000
+DEFAULT_THUMBNAIL_CONCURRENCY = 1
+DEFAULT_THUMBNAIL_TIMEOUT_SECONDS = 10.0
+DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
+
+
+class FileTooLarge(Exception):
+    """Raised when a bounded storage read exceeds its byte limit."""
+
+    @classmethod
+    def for_limit(cls, max_bytes: int) -> "FileTooLarge":
+        return cls(f"File exceeds the {max_bytes} byte read limit")
+
+
+class ThumbnailGenerationError(Exception):
+    """A safe, cacheable thumbnail generation failure.
+
+    Set ``skipped=True`` when the failure is a policy decision (for example an
+    image over a configured limit) that should stay cached until the policy
+    changes, rather than a fault worth retrying.
+    """
+
+    def __init__(self, reason: str, *, skipped: bool = False):
+        super().__init__(reason)
+        self.reason = reason
+        self.skipped = skipped
+
 
 @dataclass
 class FileMetadata:
@@ -71,6 +101,24 @@ class Storage(ABC):
     async def read_file(self, path: str) -> bytes:
         """Return the full content of a file. Raises FileNotFoundError if missing."""
         ...
+
+    async def read_file_limited(self, path: str, max_bytes: int) -> bytes:
+        """Return content while refusing known or actual content over max_bytes.
+
+        Backends should override this with a genuinely bounded implementation. The
+        default checks metadata before calling the legacy ``read_file()`` method,
+        then verifies the returned byte count for compatibility with existing
+        storage plugins.
+        """
+        metadata = await self.get_file_metadata(path)
+        if metadata is None:
+            raise FileNotFoundError(f"File not found: {path}")
+        if metadata.size is not None and metadata.size > max_bytes:
+            raise FileTooLarge.for_limit(max_bytes)
+        content = await self.read_file(path)
+        if len(content) > max_bytes:
+            raise FileTooLarge.for_limit(max_bytes)
+        return content
 
     # Optional methods — override based on capabilities
 
@@ -142,6 +190,7 @@ class ThumbnailGenerator(ABC):
     """Abstract base for thumbnail generators."""
 
     name: str
+    version: str = "1"
 
     @abstractmethod
     async def can_generate(self, content_type: str, filename: str) -> bool:

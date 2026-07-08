@@ -86,6 +86,85 @@ async def test_filesystem_storage_configure(upload_dir):
     assert storage.capabilities.can_list is True
     assert storage.capabilities.requires_proxy_download is True
 
+    configured = FilesystemStorage()
+    await configured.configure(
+        {"root": upload_dir, "max_file_size": 1234}, get_secret=None
+    )
+    assert configured.capabilities.max_file_size == 1234
+    # Only max_file_size may differ from the class-level capabilities
+    import dataclasses
+
+    for field in dataclasses.fields(configured.capabilities):
+        if field.name == "max_file_size":
+            continue
+        assert getattr(configured.capabilities, field.name) == getattr(
+            FilesystemStorage.capabilities, field.name
+        )
+
+
+@pytest.mark.asyncio
+async def test_ensure_column_adds_missing_column_once(datasette_with_files):
+    from datasette_files import _ensure_column
+
+    ds = datasette_with_files
+    await ds.invoke_startup()
+    db = ds.get_internal_database()
+    await db.execute_write("CREATE TABLE migration_demo (id INTEGER PRIMARY KEY)")
+
+    await _ensure_column(db, "migration_demo", "extra", "TEXT DEFAULT ''")
+    # Idempotent: a second call must not raise
+    await _ensure_column(db, "migration_demo", "extra", "TEXT DEFAULT ''")
+
+    columns = {
+        row["name"]
+        for row in (await db.execute("PRAGMA table_info(migration_demo)")).rows
+    }
+    assert columns == {"id", "extra"}
+
+
+@pytest.mark.asyncio
+async def test_configured_max_file_size_rejects_oversized_upload(upload_dir):
+    ds = _make_datasette(
+        upload_dir,
+        permissions={"files-upload": True},
+        extra_sources={
+            "test-uploads": {
+                "storage": "filesystem",
+                "config": {"root": upload_dir, "max_file_size": 100},
+            }
+        },
+    )
+    content = b"x" * 200
+    prepare = await ds.client.post(
+        "/-/files/upload/test-uploads/-/prepare",
+        content=json.dumps(
+            {
+                "filename": "big.bin",
+                "content_type": "application/octet-stream",
+                "size": len(content),
+            }
+        ),
+        headers={"Content-Type": "application/json"},
+    )
+    assert prepare.status_code == 200
+    token = prepare.json()["upload_token"]
+
+    upload = await ds.client.post(
+        "/-/files/upload/test-uploads/-/upload",
+        content=(
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="upload_token"\r\n'
+            b"\r\n" + token.encode() + b"\r\n"
+            b"--boundary\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="big.bin"\r\n'
+            b"Content-Type: application/octet-stream\r\n"
+            b"\r\n" + content + b"\r\n"
+            b"--boundary--\r\n"
+        ),
+        headers={"Content-Type": "multipart/form-data; boundary=boundary"},
+    )
+    assert upload.status_code != 200
+
 
 @pytest.mark.asyncio
 async def test_filesystem_storage_receive_and_read(upload_dir):
@@ -160,6 +239,8 @@ async def test_startup_creates_tables(datasette_with_files):
     assert "datasette_files_sources" in tables
     assert "datasette_files" in tables
     assert "datasette_files_fts" in tables
+    assert "datasette_files_thumbnails" in tables
+    assert "datasette_files_thumbnail_failures" in tables
 
     # Check source was registered
     rows = (await db.execute("select * from datasette_files_sources")).rows
