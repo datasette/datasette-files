@@ -21,6 +21,11 @@ from markupsafe import Markup
 from ulid import ULID
 from . import hookspecs
 from .base import (
+    DEFAULT_THUMBNAIL_CONCURRENCY,
+    DEFAULT_THUMBNAIL_MAX_PIXELS,
+    DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES,
+    DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES,
+    DEFAULT_THUMBNAIL_TIMEOUT_SECONDS,
     FileMetadata,
     FileTooLarge,
     StorageCapabilities as StorageCapabilities,
@@ -52,11 +57,6 @@ _upload_tokens: dict[str, UploadToken] = {}
 _UPLOAD_TOKEN_TTL = 3600  # 1 hour
 _DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 _MAX_FILENAME_BYTES = 255
-_DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES = 10 * 1024 * 1024
-_DEFAULT_THUMBNAIL_MAX_PIXELS = 12_000_000
-_DEFAULT_THUMBNAIL_CONCURRENCY = 1
-_DEFAULT_THUMBNAIL_TIMEOUT_SECONDS = 10.0
-_DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
 # Cached "failed" thumbnail outcomes (read errors, generator crashes, timeouts)
 # are retried after this many seconds; "skipped" outcomes are policy decisions
 # and persist until the policy cache key changes.
@@ -78,11 +78,11 @@ _thumbnail_generators: list = []
 
 @dataclass
 class ThumbnailSettings:
-    max_source_bytes: int = _DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES
-    max_pixels: int = _DEFAULT_THUMBNAIL_MAX_PIXELS
-    concurrency: int = _DEFAULT_THUMBNAIL_CONCURRENCY
-    timeout_seconds: float = _DEFAULT_THUMBNAIL_TIMEOUT_SECONDS
-    memory_limit_bytes: int = _DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES
+    max_source_bytes: int = DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES
+    max_pixels: int = DEFAULT_THUMBNAIL_MAX_PIXELS
+    concurrency: int = DEFAULT_THUMBNAIL_CONCURRENCY
+    timeout_seconds: float = DEFAULT_THUMBNAIL_TIMEOUT_SECONDS
+    memory_limit_bytes: int = DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES
     eager: bool = True
 
 
@@ -143,28 +143,28 @@ def _thumbnail_settings_from_config(config):
         max_source_bytes=_positive_number(
             config,
             "thumbnail_max_source_bytes",
-            _DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES,
+            DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES,
             int,
         ),
         max_pixels=_positive_number(
-            config, "thumbnail_max_pixels", _DEFAULT_THUMBNAIL_MAX_PIXELS, int
+            config, "thumbnail_max_pixels", DEFAULT_THUMBNAIL_MAX_PIXELS, int
         ),
         concurrency=_positive_number(
             config,
             "thumbnail_concurrency",
-            _DEFAULT_THUMBNAIL_CONCURRENCY,
+            DEFAULT_THUMBNAIL_CONCURRENCY,
             int,
         ),
         timeout_seconds=_positive_number(
             config,
             "thumbnail_timeout_seconds",
-            _DEFAULT_THUMBNAIL_TIMEOUT_SECONDS,
+            DEFAULT_THUMBNAIL_TIMEOUT_SECONDS,
             float,
         ),
         memory_limit_bytes=_positive_number(
             config,
             "thumbnail_process_memory_limit_bytes",
-            _DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES,
+            DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES,
             int,
         ),
         eager=bool(eager),

@@ -57,11 +57,11 @@ class FilesystemStorage(Storage):
         if not target.exists():
             raise FileNotFoundError(f"File not found: {path}")
         if target.stat().st_size > max_bytes:
-            raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
+            raise FileTooLarge.for_limit(max_bytes)
         with open(target, "rb") as fileobj:
             content = fileobj.read(max_bytes + 1)
         if len(content) > max_bytes:
-            raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
+            raise FileTooLarge.for_limit(max_bytes)
         return content
 
     async def stream_file(self, path: str) -> AsyncIterator[bytes]:

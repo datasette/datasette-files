@@ -5,8 +5,21 @@ from dataclasses import dataclass, field
 from typing import Optional, AsyncIterator
 
 
+# Thumbnail resource-safety defaults, shared by the coordinator and the
+# built-in Pillow generator so documented and enforced limits cannot drift.
+DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES = 10 * 1024 * 1024
+DEFAULT_THUMBNAIL_MAX_PIXELS = 12_000_000
+DEFAULT_THUMBNAIL_CONCURRENCY = 1
+DEFAULT_THUMBNAIL_TIMEOUT_SECONDS = 10.0
+DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES = 128 * 1024 * 1024
+
+
 class FileTooLarge(Exception):
     """Raised when a bounded storage read exceeds its byte limit."""
+
+    @classmethod
+    def for_limit(cls, max_bytes: int) -> "FileTooLarge":
+        return cls(f"File exceeds the {max_bytes} byte read limit")
 
 
 class ThumbnailGenerationError(Exception):
@@ -102,10 +115,10 @@ class Storage(ABC):
         if metadata is None:
             raise FileNotFoundError(f"File not found: {path}")
         if metadata.size is not None and metadata.size > max_bytes:
-            raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
+            raise FileTooLarge.for_limit(max_bytes)
         content = await self.read_file(path)
         if len(content) > max_bytes:
-            raise FileTooLarge(f"File exceeds the {max_bytes} byte read limit")
+            raise FileTooLarge.for_limit(max_bytes)
         return content
 
     # Optional methods — override based on capabilities

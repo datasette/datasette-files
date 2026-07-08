@@ -3,7 +3,13 @@ import json
 import sys
 from typing import Optional
 
-from .base import ThumbnailGenerationError, ThumbnailGenerator, ThumbnailResult
+from .base import (
+    DEFAULT_THUMBNAIL_MAX_PIXELS,
+    DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES,
+    ThumbnailGenerationError,
+    ThumbnailGenerator,
+    ThumbnailResult,
+)
 
 SUPPORTED_CONTENT_TYPES = {
     "image/jpeg",
@@ -48,8 +54,8 @@ class PillowThumbnailGenerator(ThumbnailGenerator):
     def __init__(
         self,
         *,
-        max_pixels: int = 12_000_000,
-        memory_limit_bytes: int = 128 * 1024 * 1024,
+        max_pixels: int = DEFAULT_THUMBNAIL_MAX_PIXELS,
+        memory_limit_bytes: int = DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES,
     ):
         self.max_pixels = max_pixels
         self.memory_limit_bytes = memory_limit_bytes

@@ -948,6 +948,22 @@ async def test_thumbnail_settings_are_per_instance(upload_dir, tmp_path):
     assert dict(row) == {"status": "skipped", "reason": "too_large"}
 
 
+def test_thumbnail_safety_defaults_are_shared():
+    from datasette_files import ThumbnailSettings, base
+    from datasette_files.pillow_thumbnails import PillowThumbnailGenerator
+
+    generator = PillowThumbnailGenerator()
+    assert generator.max_pixels == base.DEFAULT_THUMBNAIL_MAX_PIXELS
+    assert generator.memory_limit_bytes == base.DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES
+
+    settings = ThumbnailSettings()
+    assert settings.max_source_bytes == base.DEFAULT_THUMBNAIL_MAX_SOURCE_BYTES
+    assert settings.max_pixels == base.DEFAULT_THUMBNAIL_MAX_PIXELS
+    assert settings.concurrency == base.DEFAULT_THUMBNAIL_CONCURRENCY
+    assert settings.timeout_seconds == base.DEFAULT_THUMBNAIL_TIMEOUT_SECONDS
+    assert settings.memory_limit_bytes == base.DEFAULT_THUMBNAIL_MEMORY_LIMIT_BYTES
+
+
 @pytest.mark.asyncio
 async def test_read_file_limited_default_reads_when_size_unknown():
     from datasette_files.base import (
