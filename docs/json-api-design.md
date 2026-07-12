@@ -308,7 +308,7 @@ GET /-/files/batch.json?id={file_id}&id={file_id}&...
 ### 5. Search Files
 
 ```
-GET /-/files/search.json?q={query}&source={source_slug}
+GET /-/files/search.json?q={query}&source={source_slug}&_next={cursor}
 ```
 
 **Permission:** `files-browse` (results filtered to accessible sources only).
@@ -319,6 +319,7 @@ GET /-/files/search.json?q={query}&source={source_slug}
 |-----------|----------|-------------|
 | `q` | No | Full-text search query. Prefix-matched against filename, content_type, and search_text. |
 | `source` | No | Filter to a specific source slug. |
+| `_next` | No | Keyset cursor returned by the previous response. |
 
 **Response (200):**
 
@@ -340,14 +341,17 @@ GET /-/files/search.json?q={query}&source={source_slug}
       "source_slug": "local-uploads"
     }
   ],
-  "sources": ["local-uploads", "product-images"]
+  "sources": ["local-uploads", "product-images"],
+  "total": 54,
+  "next": "-8.8e-07,df-01j5a3b4c5d6e7f8g9h0jkmnpq"
 }
 ```
 
 **Notes:**
 - `sources` lists all source slugs the actor has `files-browse` permission on, useful for building source filter dropdowns.
 - When `q` is empty/omitted, returns recent files (ordered by `created_at` descending).
-- Results are capped at 50 rows. A future iteration could add cursor-based pagination.
+- Pages contain up to 20 rows. Pass the response's `next` value back as `_next` to fetch the next page. A null `next` means there are no more results.
+- Pagination uses the same keyset pattern as Datasette: `(created_at, id)` for recent files and `(FTS rank, id)` for full-text results. The file ID is a deterministic tie-breaker.
 - FTS5 prefix matching: each search term gets a `*` suffix. Multiple terms are OR'd together.
 
 ---
@@ -553,9 +557,9 @@ POST /-/files/{file_id}/-/update
 
 Follows the convention used by Datasette's own write API (`/-/create`, `/-/drop`, etc.). Makes it easy for clients to check success without inspecting HTTP status codes. The `ok` field is always present.
 
-### Why no cursor-based pagination on search?
+### Why keyset pagination on search?
 
-Search results are capped at 50 rows, which covers the vast majority of use cases. Adding cursor pagination to FTS queries adds complexity (FTS5 rank-ordered results don't have a natural cursor). If needed, this can be added later without breaking the API — add an optional `cursor` parameter and a `next_cursor` field in the response.
+Keyset pagination follows Datasette's own `?_next=` convention and avoids increasingly expensive SQL offsets. FTS5 rank alone is not unique, so the cursor includes both rank and file ID; recent-file cursors likewise include both creation time and file ID. This prevents equal sort values from skipping or duplicating files between pages.
 
 ### Why silent omission in batch.json?
 
