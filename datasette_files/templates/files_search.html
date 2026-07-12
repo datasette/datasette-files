@@ -25,6 +25,15 @@
 {% elif not q and not files %}
 <p>No files available.</p>
 {% else %}
+{% if total %}
+<p>{{ total }} result{{ "s" if total != 1 else "" }}</p>
+{% endif %}
 {% include "_files_table.html" with context %}
+
+{% if next %}
+<p style="margin-top: 1em;">
+    <a href="{{ urls.path('/-/files/search') }}?q={{ q|urlencode }}{% if source_filter %}&source={{ source_filter|urlencode }}{% endif %}&_next={{ next|urlencode }}">Next</a>
+</p>
+{% endif %}
 {% endif %}
 {% endblock %}

@@ -16,7 +16,7 @@ from datasette import hookimpl, Response, NotFound, Forbidden
 from datasette.column_types import ColumnType, SQLiteType
 from datasette.permissions import Action, PermissionSQL, Resource
 from datasette.plugins import pm
-from datasette.utils import await_me_maybe
+from datasette.utils import await_me_maybe, tilde_encode, urlsafe_components
 from markupsafe import Markup
 from ulid import ULID
 from . import hookspecs
@@ -1780,7 +1780,7 @@ async def _list_files(db, allowed_slugs, source_filter=None, offset=0, limit=PAG
         JOIN datasette_files_sources s ON f.source_id = s.id
         WHERE s.slug IN ({placeholders})
         {where_source}
-        ORDER BY f.created_at DESC
+        ORDER BY f.created_at DESC, f.id DESC
         LIMIT :_limit OFFSET :_offset
     """.format(placeholders=placeholders, where_source=where_source)
     params["_limit"] = limit
@@ -1796,6 +1796,8 @@ async def search_files(request, datasette):
 
     db = datasette.get_internal_database()
 
+    next_arg = request.args.get("_next")
+
     # Get allowed source slugs via the permissions SQL CTE.
     # We execute this as a separate query because the CTE uses WITH clauses
     # that cannot be nested inside another query alongside FTS MATCH.
@@ -1806,6 +1808,8 @@ async def search_files(request, datasette):
     allowed_rows = (await db.execute(resources_sql.sql, resources_sql.params)).rows
     allowed_slugs = [row["parent"] for row in allowed_rows]
 
+    total = 0
+    next_value = None
     if not allowed_slugs:
         files = []
     elif q and _FILE_ID_RE.match(q):
@@ -1829,37 +1833,131 @@ async def search_files(request, datasette):
         if source_filter:
             params["source_filter"] = source_filter
         files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
+        total = len(files)
     elif q:
         # Build prefix query: append * to each term for prefix matching, OR between terms
         terms = ['"{}"*'.format(term.replace('"', '""')) for term in q.split() if term]
         fts_q = " OR ".join(terms) if len(terms) > 1 else terms[0] if terms else q
         # FTS search filtered to allowed sources
         placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
-        search_sql = """
-            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
-                   f.created_at, f.uploaded_by, s.slug as source_slug
+        source_where = "AND s.slug = :source_filter" if source_filter else ""
+        count_sql = """
+            SELECT COUNT(*) as count
             FROM datasette_files_fts fts
             JOIN datasette_files f ON fts.id = f.id
             JOIN datasette_files_sources s ON f.source_id = s.id
             WHERE datasette_files_fts MATCH :q
             AND s.slug IN ({placeholders})
             {source_where}
-            ORDER BY fts.rank
-            LIMIT 50
         """.format(
             placeholders=placeholders,
-            source_where="AND s.slug = :source_filter" if source_filter else "",
+            source_where=source_where,
+        )
+        next_where = ""
+        if next_arg:
+            try:
+                components = urlsafe_components(next_arg)
+                if len(components) == 2:
+                    params_rank = float(components[0])
+                    next_where = """
+                        AND (
+                            fts.rank > :_next_rank
+                            OR (fts.rank = :_next_rank AND f.id > :_next_id)
+                        )
+                    """
+            except (TypeError, ValueError):
+                pass
+
+        search_sql = """
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   f.created_at, f.uploaded_by, s.slug as source_slug,
+                   fts.rank AS _rank
+            FROM datasette_files_fts fts
+            JOIN datasette_files f ON fts.id = f.id
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE datasette_files_fts MATCH :q
+            AND s.slug IN ({placeholders})
+            {source_where}
+            {next_where}
+            ORDER BY fts.rank, f.id
+            LIMIT :_limit
+        """.format(
+            placeholders=placeholders,
+            source_where=source_where,
+            next_where=next_where,
         )
         params = {"q": fts_q}
         for i, slug in enumerate(allowed_slugs):
             params[f"_slug_{i}"] = slug
         if source_filter:
             params["source_filter"] = source_filter
+        if next_where:
+            params["_next_rank"] = params_rank
+            params["_next_id"] = components[1]
+        total = (await db.execute(count_sql, params)).first()["count"]
+        params["_limit"] = PAGE_SIZE + 1
         files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
+        if len(files) > PAGE_SIZE:
+            files = files[:PAGE_SIZE]
+            next_value = "{},{}".format(
+                tilde_encode(str(files[-1]["_rank"])),
+                tilde_encode(files[-1]["id"]),
+            )
+        for file in files:
+            file.pop("_rank")
     else:
-        files, _ = await _list_files(
-            db, allowed_slugs, source_filter=source_filter or None, limit=50
+        placeholders = ",".join(f":_slug_{i}" for i in range(len(allowed_slugs)))
+        source_where = "AND s.slug = :source_filter" if source_filter else ""
+        next_where = ""
+        params = {f"_slug_{i}": slug for i, slug in enumerate(allowed_slugs)}
+        if source_filter:
+            params["source_filter"] = source_filter
+        if next_arg:
+            try:
+                components = urlsafe_components(next_arg)
+                if len(components) == 2:
+                    next_where = """
+                        AND (
+                            f.created_at < :_next_created_at
+                            OR (f.created_at = :_next_created_at AND f.id < :_next_id)
+                        )
+                    """
+                    params["_next_created_at"] = components[0]
+                    params["_next_id"] = components[1]
+            except ValueError:
+                pass
+
+        count_sql = """
+            SELECT COUNT(*) as count
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE s.slug IN ({placeholders})
+            {source_where}
+        """.format(placeholders=placeholders, source_where=source_where)
+        search_sql = """
+            SELECT f.id, f.filename, f.content_type, f.size, f.width, f.height,
+                   f.created_at, f.uploaded_by, s.slug as source_slug
+            FROM datasette_files f
+            JOIN datasette_files_sources s ON f.source_id = s.id
+            WHERE s.slug IN ({placeholders})
+            {source_where}
+            {next_where}
+            ORDER BY f.created_at DESC, f.id DESC
+            LIMIT :_limit
+        """.format(
+            placeholders=placeholders,
+            source_where=source_where,
+            next_where=next_where,
         )
+        total = (await db.execute(count_sql, params)).first()["count"]
+        params["_limit"] = PAGE_SIZE + 1
+        files = [dict(row) for row in (await db.execute(search_sql, params)).rows]
+        if len(files) > PAGE_SIZE:
+            files = files[:PAGE_SIZE]
+            next_value = "{},{}".format(
+                tilde_encode(files[-1]["created_at"]),
+                tilde_encode(files[-1]["id"]),
+            )
 
     # The allowed_slugs already represent the browsable sources
     browsable_sources = allowed_slugs
@@ -1872,6 +1970,8 @@ async def search_files(request, datasette):
                 "source": source_filter,
                 "files": files,
                 "sources": browsable_sources,
+                "total": total,
+                "next": next_value,
             }
         )
 
@@ -1884,6 +1984,8 @@ async def search_files(request, datasette):
                 "files": files,
                 "sources": browsable_sources,
                 "show_source": True,
+                "total": total,
+                "next": next_value,
             },
             request=request,
         )

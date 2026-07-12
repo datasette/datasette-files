@@ -590,6 +590,219 @@ async def test_search_source_filter(datasette_browse_allowed, upload_dir):
     assert len(response.json()["files"]) == 0
 
 
+# --- Search pagination ---
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_fields(datasette_browse_allowed, upload_dir):
+    """Search JSON response includes pagination metadata."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="alpha.txt", content=b"a")
+
+    response = await ds.client.get("/-/files/search.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["next"] is None
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_multiple_pages(
+    datasette_browse_allowed, upload_dir
+):
+    """Search JSON paginates results when there are more than PAGE_SIZE files."""
+    ds = datasette_browse_allowed
+    # Upload 25 files (PAGE_SIZE is 20)
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"pagefile-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+
+    # First page should have 20 files and a cursor
+    response = await ds.client.get("/-/files/search.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 20
+    assert data["total"] == 25
+    assert data["next"]
+    first_page_ids = {file["id"] for file in data["files"]}
+
+    # Following the cursor should return the remaining 5 files
+    response = await ds.client.get(
+        "/-/files/search.json", params={"_next": data["next"]}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 5
+    assert data["total"] == 25
+    assert data["next"] is None
+    assert first_page_ids.isdisjoint(file["id"] for file in data["files"])
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_with_query(datasette_browse_allowed, upload_dir):
+    """FTS search results are paginated."""
+    ds = datasette_browse_allowed
+    # Upload 25 files matching a search term, plus some that don't
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"report-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+    await _upload_file(
+        ds, filename="unrelated.jpg", content=b"img", content_type="image/jpeg"
+    )
+
+    # Search for "report" - first page
+    response = await ds.client.get("/-/files/search.json?q=report")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 20
+    assert data["total"] == 25
+    assert data["next"]
+    assert all("report" in f["filename"] for f in data["files"])
+    first_page_ids = {file["id"] for file in data["files"]}
+
+    # Search for "report" - next cursor
+    response = await ds.client.get(
+        "/-/files/search.json", params={"q": "report", "_next": data["next"]}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 5
+    assert data["total"] == 25
+    assert data["next"] is None
+    assert all("report" in f["filename"] for f in data["files"])
+    assert first_page_ids.isdisjoint(file["id"] for file in data["files"])
+
+
+@pytest.mark.asyncio
+async def test_search_json_pagination_with_source_filter(
+    datasette_browse_allowed, upload_dir
+):
+    """Pagination works together with source filter."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"filtered-{i:03d}.txt",
+            content=f"data-{i}".encode(),
+        )
+
+    response = await ds.client.get("/-/files/search.json?source=test-uploads")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 20
+    assert data["total"] == 25
+    assert data["next"]
+
+    response = await ds.client.get(
+        "/-/files/search.json",
+        params={"source": "test-uploads", "_next": data["next"]},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["files"]) == 5
+    assert data["next"] is None
+
+
+@pytest.mark.asyncio
+async def test_search_html_pagination_links(datasette_browse_allowed, upload_dir):
+    """Search HTML page shows pagination links when results span multiple pages."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"htmlpage-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+
+    # First page should show a Datasette-style _next link
+    response = await ds.client.get("/-/files/search")
+    assert response.status_code == 200
+    html = response.text
+    assert "_next=" in html
+    assert "Previous" not in html
+    assert "25 results" in html
+
+
+@pytest.mark.asyncio
+async def test_search_html_pagination_with_query(datasette_browse_allowed, upload_dir):
+    """Search HTML pagination links preserve the query parameter."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(
+            ds,
+            filename=f"doc-{i:03d}.txt",
+            content=f"content-{i}".encode(),
+        )
+
+    response = await ds.client.get("/-/files/search?q=doc")
+    assert response.status_code == 200
+    html = response.text
+    # The Next link should include the query
+    assert "q=doc" in html
+    assert "_next=" in html
+
+
+@pytest.mark.asyncio
+async def test_search_html_no_pagination_when_few_results(
+    datasette_browse_allowed, upload_dir
+):
+    """Search HTML page does not show pagination when results fit on one page."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="solo.txt", content=b"only one")
+
+    response = await ds.client.get("/-/files/search?q=solo")
+    assert response.status_code == 200
+    html = response.text
+    assert "solo.txt" in html
+    assert "Previous" not in html
+    assert "Next" not in html
+
+
+@pytest.mark.asyncio
+async def test_search_keyset_pagination_is_stable_when_file_added(
+    datasette_browse_allowed, upload_dir
+):
+    """A new first-page file does not shift an item onto the second page."""
+    ds = datasette_browse_allowed
+    for i in range(25):
+        await _upload_file(ds, filename=f"stable-{i:03d}.txt", content=b"data")
+
+    first = (await ds.client.get("/-/files/search.json")).json()
+    original_ids = {file["id"] for file in first["files"]}
+    cursor = first["next"]
+
+    new_file = await _upload_file(ds, filename="newest.txt", content=b"new")
+    second = (
+        await ds.client.get("/-/files/search.json", params={"_next": cursor})
+    ).json()
+
+    assert len(second["files"]) == 5
+    assert original_ids.isdisjoint(file["id"] for file in second["files"])
+    assert new_file["file_id"] not in {file["id"] for file in second["files"]}
+
+
+@pytest.mark.asyncio
+async def test_search_invalid_next_starts_at_beginning(
+    datasette_browse_allowed, upload_dir
+):
+    """Invalid cursors are ignored, matching Datasette's pagination behavior."""
+    ds = datasette_browse_allowed
+    await _upload_file(ds, filename="alpha.txt", content=b"a")
+
+    first = (await ds.client.get("/-/files/search.json")).json()
+    invalid = (
+        await ds.client.get("/-/files/search.json?_next=not-a-valid-cursor")
+    ).json()
+
+    assert invalid["files"] == first["files"]
+
+
 @pytest.mark.asyncio
 async def test_search_json_exact_file_id(datasette_browse_allowed, upload_dir):
     """Searching for an exact file ID finds that file."""
